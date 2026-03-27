@@ -186,17 +186,25 @@ def parse_intent(message):
         }
     }
     try:
-        r = requests.post(url, json=payload, timeout=10)
+        r = requests.post(url, json=payload, timeout=15)
+        print(f"Gemini status: {r.status_code}")
+        print(f"Gemini response: {r.text[:500]}")
         if r.status_code == 200:
-            text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            resp_json = r.json()
+            text = resp_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+            print(f"Gemini text: {text}")
             # נקה markdown אם יש
             if text.startswith("```"):
                 text = text.split("```")[1]
                 if text.startswith("json"):
                     text = text[4:]
-            return json.loads(text)
+            parsed = json.loads(text)
+            print(f"Gemini parsed: {parsed}")
+            return parsed
+        else:
+            print(f"Gemini error response: {r.text}")
     except Exception as e:
-        print(f"Gemini error: {e}")
+        print(f"Gemini exception: {e}")
     return {"action": "unknown"}
 
 def pick_best_match(options, user_reply):
