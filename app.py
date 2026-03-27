@@ -5,7 +5,6 @@ from datetime import date
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
-from openai import OpenAI
 
 app = Flask(__name__)
 
@@ -18,9 +17,8 @@ ZOHO_CLIENT_ID     = os.environ["ZOHO_CLIENT_ID"]
 ZOHO_CLIENT_SECRET = os.environ["ZOHO_CLIENT_SECRET"]
 ZOHO_REFRESH_TOKEN = os.environ["ZOHO_REFRESH_TOKEN"]
 ZOHO_API_DOMAIN    = os.environ.get("ZOHO_API_DOMAIN", "https://www.zohoapis.com")
-OPENAI_API_KEY     = os.environ.get("OPENAI_API_KEY", "")
+GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "")
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 # ─── In-memory token cache ─────────────────────────────────────────────────────
@@ -133,7 +131,7 @@ def build_invoice_confirmation(contact, product):
             f"📦 {product.get('Product_Name')}\n"
             f"💰 ₪{product.get('Unit_Price', 0)} | לא שולם")
 
-# ─── AI intent parser ──────────────────────────────────────────────────────────
+# ─── AI intent parser (Google Gemini) ─────────────────────────────────────────
 SYSTEM_PROMPT = """
 אתה עוזר חכם שמנתח פקודות בעברית ומחזיר JSON בלבד.
 
@@ -159,18 +157,35 @@ SYSTEM_PROMPT = """
 """
 
 def parse_intent(message):
-    response = openai_client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": message}
-        ],
-        temperature=0
-    )
-    try:
-        return json.loads(response.choices[0].message.content.strip())
-    except:
+    if not GEMINI_API_KEY:
         return {"action": "unknown"}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": SYSTEM_PROMPT + "\n\nהודעת משתמש: " + message}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0,
+            "responseMimeType": "application/json"
+        }
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code == 200:
+            text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            # נקה markdown אם יש
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            return json.loads(text)
+    except Exception as e:
+        print(f"Gemini error: {e}")
+    return {"action": "unknown"}
 
 def pick_best_match(options, user_reply):
     reply_lower = user_reply.strip().lower()
