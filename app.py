@@ -133,27 +133,39 @@ def build_invoice_confirmation(contact, product):
 
 # ─── AI intent parser (Google Gemini) ─────────────────────────────────────────
 SYSTEM_PROMPT = """
-אתה עוזר חכם שמנתח פקודות בעברית ומחזיר JSON בלבד.
+אתה עוזר חכם שמנתח פקודות קצרות בעברית ומחזיר JSON בלבד. אסור לך לשאול שאלות - תמיד תחזיר JSON.
+
+הפורמט הנפוץ ביותר הוא: [מוצר] [שם לקוח] [שם בעל בית/מקום]
+לדוגמה: "050 סוויט אילן" = מוצר 050 סוויט, לקוח לא ידוע, בעל בית אילן.
+
+כלל חשוב: אם ההודעה מכילה שם מוצר (כמו 050, סוביט, סוויט, כרטיס, מבטחים) - זו תמיד יצירת חשבונית!
 
 הפקודות האפשריות:
 1. יצירת חשבונית: {"action": "create_invoice", "product": "...", "contact": "...", "account": "..."}
 2. תשלום חשבונית: {"action": "payment", "contact": "...", "account": "...", "amount": 120, "method": "מזומן"}
-3. עדכון סטטוס: {"action": "update_status", "contact": "...", "account": "...", "status": "paid"/"not_paid"}
-4. שאילתת חשבוניות פתוחות: {"action": "query", "type": "open_invoices", "account": "..."}
-5. לא מובן: {"action": "unknown"}
+3. שאילתת חשבוניות פתוחות: {"action": "query", "type": "open_invoices", "account": "..."}
+4. לא מובן: {"action": "unknown"}
 
-הערות:
-- "שילם", "שולם", "שלם", "תשלום" = action: payment
+כללים:
+- "שילם", "שולם", "שלם", "תשלום", "מזומן" בלי מוצר = action: payment
+- אם יש שם מוצר בהודעה = תמיד action: create_invoice
+- contact = שם הלקוח הספציפי (אם לא ברור - שים "")
+- account = שם בעל הבית / מקום העבודה / הנכס
 - אמצעי תשלום: "מזומן", "העברה", "צ'ק", "אשראי" - ברירת מחדל "מזומן"
-- contact = שם הלקוח, account = שם בעל הבית / מקום העבודה
 
-דוגמאות:
+דוגמאות ליצירת חשבונית:
+- "050 סוויט אילן" → {"action": "create_invoice", "product": "050 סוויט", "contact": "", "account": "אילן"}
 - "050 לטייה של איציק" → {"action": "create_invoice", "product": "050", "contact": "טייה", "account": "איציק"}
+- "סוביט אילן שילם 120 מזומן" → {"action": "payment", "contact": "אילן", "account": "", "amount": 120, "method": "מזומן"}
+- "כרטיס 050 גדול אידיאל" → {"action": "create_invoice", "product": "כרטיס 050 גדול", "contact": "", "account": "אידיאל"}
+- "מבטחים שעה אילן" → {"action": "create_invoice", "product": "מבטחים שעה", "contact": "", "account": "אילן"}
+
+דוגמאות לתשלום:
 - "טונגצאי בוי שער דוד שילם 120 מזומן" → {"action": "payment", "contact": "טונגצאי בוי", "account": "שער דוד", "amount": 120, "method": "מזומן"}
-- "סומניק של אילן שלם 200 העברה" → {"action": "payment", "contact": "סומניק", "account": "אילן", "amount": 200, "method": "העברה"}
+- "סוביט אילן שילם 120 מזומן" → {"action": "payment", "contact": "", "account": "אילן", "amount": 120, "method": "מזומן"}
 - "כמה חשבוניות פתוחות לאילן?" → {"action": "query", "type": "open_invoices", "account": "אילן"}
 
-החזר JSON בלבד, ללא טקסט נוסף.
+החזר JSON בלבד, ללא טקסט נוסף, ללא הסברים.
 """
 
 def parse_intent(message):
