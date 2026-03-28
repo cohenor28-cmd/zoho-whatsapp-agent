@@ -3,7 +3,7 @@ import json
 import time
 import threading
 import requests
-from datetime import date
+from datetime import date, datetime, timedelta
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
@@ -30,11 +30,13 @@ _token_cache = {
     "expires_at": 0  # timestamp - מתי הטוקן פג תוקף
 }
 
-# ─── שיפור #3: Product cache בזיכרון (חוסך 1-2 שניות) ───────────────────────
+## ─── שיפור #3: Product cache בזיכרון (חוסך 1-2 שניות) + סנכרון אינקרמנטלי ─────
 _product_cache = {
-    "products": [],       # רשימת כל המוצרים
-    "loaded_at": 0,       # מתי נטען
-    "ttl": 3600 * 6       # רענון כל 6 שעות
+    "products": [],            # רשימת כל המוצרים
+    "products_by_id": {},      # מילון לפי id לגישה מהירה
+    "loaded_at": 0,            # מתי נטען (לאשונה)
+    "last_sync_time": None,    # זמן סנכרון אחרון (ISO format)
+    "ttl": 3600 * 6            # בדיקת מוצרים חדשים כל 6 שעות
 }
 
 # ─── Session memory (per phone number) ────────────────────────────────────────
@@ -103,29 +105,80 @@ def zoho_put(endpoint, data):
     print(f"zoho_put {endpoint} status={r.status_code}")
     return r.json()
 
-# ─── שיפור #3: Product cache functions ───────────────────────────────────────
+# ─── שיפור #3: Product cache functions + סנכרון אינקרמנטלי ─────────────────
 def load_all_products():
-    """טוען את כל המוצרים מ-Zoho לזיכרון"""
-    print("Loading all products into cache...")
+    """טעינה מלאה ראשונה - מושך את כל המוצרים מ-Zoho"""
+    print("Loading ALL products into cache (full load)...")
     all_products = []
     page = 1
     while True:
-        results = zoho_get("Products", {"fields": "Product_Name,Unit_Price,id", "per_page": 200, "page": page})
+        results = zoho_get("Products", {"fields": "Product_Name,Unit_Price,id,Modified_Time", "per_page": 200, "page": page})
         if not results:
             break
         all_products.extend(results)
         if len(results) < 200:
             break
         page += 1
+    # בנה מילון לפי id לגישה מהירה בעדכונים
+    products_by_id = {p["id"]: p for p in all_products}
     _product_cache["products"] = all_products
+    _product_cache["products_by_id"] = products_by_id
     _product_cache["loaded_at"] = time.time()
-    print(f"Product cache loaded: {len(all_products)} products")
+    _product_cache["last_sync_time"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    print(f"Product cache FULL load: {len(all_products)} products")
     return all_products
 
-def get_cached_products():
-    """מחזיר מוצרים מהקאש, טוען מחדש אם צריך"""
-    if not _product_cache["products"] or (time.time() - _product_cache["loaded_at"]) > _product_cache["ttl"]:
+def sync_new_products():
+    """סנכרון אינקרמנטלי - מושך רק מוצרים שנוצרו/עודכנו מאז הסנכרון האחרון"""
+    last_sync = _product_cache.get("last_sync_time")
+    if not last_sync or not _product_cache["products"]:
+        # אין נתוני סנכרון קודמים - עשה טעינה מלאה
         return load_all_products()
+    
+    print(f"Syncing products modified since {last_sync}...")
+    new_sync_time = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    
+    # חפש מוצרים שעודכנו/נוצרו מאז הסנכרון האחרון
+    new_products = []
+    page = 1
+    while True:
+        # Zoho CRM v5 תומך ב-criteria עם Modified_Time
+        criteria = f"(Modified_Time:greater_equal:{last_sync})"
+        results = zoho_get("Products/search", {
+            "criteria": criteria,
+            "fields": "Product_Name,Unit_Price,id,Modified_Time",
+            "per_page": 200,
+            "page": page
+        })
+        if not results:
+            break
+        new_products.extend(results)
+        if len(results) < 200:
+            break
+        page += 1
+    
+    if new_products:
+        # מזג לתוך הקאש - עדכן קיימים או הוסף חדשים
+        products_by_id = _product_cache["products_by_id"]
+        for p in new_products:
+            products_by_id[p["id"]] = p
+        # בנה מחדש את רשימת המוצרים
+        _product_cache["products"] = list(products_by_id.values())
+        _product_cache["products_by_id"] = products_by_id
+        print(f"Product cache INCREMENTAL sync: {len(new_products)} new/updated products merged. Total: {len(_product_cache['products'])}")
+    else:
+        print("Product cache INCREMENTAL sync: no new products found.")
+    
+    _product_cache["loaded_at"] = time.time()
+    _product_cache["last_sync_time"] = new_sync_time
+    return _product_cache["products"]
+
+def get_cached_products():
+    """מחזיר מוצרים מהקאש. אם פג TTL - עושה סנכרון אינקרמנטלי (לא טעינה מלאה!)"""
+    if not _product_cache["products"]:
+        return load_all_products()  # טעינה ראשונה
+    if (time.time() - _product_cache["loaded_at"]) > _product_cache["ttl"]:
+        return sync_new_products()  # רק מוצרים חדשים/מעודכנים
     return _product_cache["products"]
 
 # ─── CRM actions ───────────────────────────────────────────────────────────────
