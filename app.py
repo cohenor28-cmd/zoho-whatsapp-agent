@@ -94,17 +94,30 @@ def find_contact_by_name_and_account(contact_name, account_name):
     return matches, accounts
 
 def find_product(product_name):
-    """חיפוש מוצר לפי שם ב-Zoho API ישירות (לא לפי ID)"""
+    """חיפוש מוצר לפי שם ב-Zoho API - תומך בחיפוש חלקי"""
     if not product_name:
         print("find_product: empty product name")
         return []
 
     print(f"find_product: searching for '{product_name}'")
+    product_lower = product_name.strip().lower()
 
     # חיפוש ישיר ב-Zoho לפי שם
     results = zoho_get("Products/search", {"word": product_name, "fields": "Product_Name,Unit_Price,id"})
     if results:
-        print(f"find_product: found {len(results)} results for '{product_name}': {results[0].get('Product_Name')} id={results[0].get('id')}")
+        # סינון - רק מוצרים שמכילים את כל המילים שהמשתמש כתב
+        words = product_lower.split()
+        filtered = []
+        for p in results:
+            pname = p.get("Product_Name", "").lower()
+            if all(w in pname for w in words):
+                filtered.append(p)
+        # אם יש התאמה מדויקת - החזר אותה
+        if filtered:
+            print(f"find_product: filtered to {len(filtered)} results for '{product_name}'")
+            return filtered
+        # אם אין סינון מדויק - החזר הכל
+        print(f"find_product: found {len(results)} results for '{product_name}' (no exact filter match, returning all)")
         return results
 
     # אם לא נמצא - נסה חיפוש עם מילה ראשונה בלבד
@@ -114,14 +127,18 @@ def find_product(product_name):
         print(f"find_product: retry with first word '{first_word}'")
         results2 = zoho_get("Products/search", {"word": first_word, "fields": "Product_Name,Unit_Price,id"})
         if results2:
-            # בחר את ההתאמה הכי קרובה
-            product_lower = product_name.lower()
+            # סנן לפי כל המילים
+            filtered2 = [p for p in results2 if all(w in p.get("Product_Name", "").lower() for w in product_lower.split())]
+            if filtered2:
+                return filtered2
+            # אם אין - חפש התאמה חלקית
             for p in results2:
-                if product_lower in p.get("Product_Name", "").lower() or p.get("Product_Name", "").lower() in product_lower:
+                pname = p.get("Product_Name", "").lower()
+                if product_lower in pname or pname in product_lower:
                     print(f"find_product: matched '{p.get('Product_Name')}' via first-word search")
                     return [p]
-            print(f"find_product: first-word search returned {len(results2)} results but no close match")
-            return results2[:1]
+            print(f"find_product: first-word search returned {len(results2)} results")
+            return results2
 
     print(f"find_product: no results for '{product_name}'")
     return []
@@ -326,6 +343,43 @@ def handle_command(message, from_number):
     session = sessions.get(from_number, {})
     pending = session.get("pending")
 
+    if pending == "product_choice":
+        options = session["options"]
+        context = session["context"]
+        chosen = None
+        msg_lower = message.strip().lower()
+        # בחירה לפי מספר
+        if msg_lower.isdigit():
+            idx = int(msg_lower) - 1
+            if 0 <= idx < len(options):
+                chosen = options[idx]
+        # בחירה לפי שם
+        if not chosen:
+            for opt in options:
+                if msg_lower in opt.get("Product_Name", "").lower():
+                    chosen = opt
+                    break
+        if not chosen:
+            lines = [f"{i+1}. {p.get('Product_Name', '')} - ₪{p.get('Unit_Price', 0)}" for i, p in enumerate(options)]
+            return f"לא הצלחתי לזהות. בחר מספר:\n" + "\n".join(lines)
+        sessions.pop(from_number, None)
+        product = chosen
+        contact_name = context["contact_name"]
+        account_name = context["account_name"]
+        contacts, accounts = find_contact_by_name_and_account(contact_name, account_name)
+        if not contacts:
+            return f"❌ לא מצאתי לקוח '{contact_name}' אצל '{account_name}'"
+        if len(contacts) > 1:
+            sessions[from_number] = {"pending": "contact_choice", "options": contacts, "context": {"product": product}}
+            names = "\n".join([f"{i+1}. {c['Full_Name']}" for i, c in enumerate(contacts)])
+            return f"מצאתי כמה לקוחות:\n{names}\n\nכתוב חלק מהשם או מספר לבחירה:"
+        contact = contacts[0]
+        acc_id = contact.get("Account_Name", {}).get("id") if isinstance(contact.get("Account_Name"), dict) else None
+        if not acc_id and accounts:
+            acc_id = accounts[0]["id"]
+        inv_id = create_invoice(contact["id"], acc_id, product["id"], product.get("Unit_Price", 0), contact["Full_Name"])
+        return build_invoice_confirmation(contact, product) if inv_id else "❌ שגיאה ביצירת החשבונית"
+
     if pending == "contact_choice":
         options = session["options"]
         context = session["context"]
@@ -382,6 +436,20 @@ def handle_command(message, from_number):
         products = find_product(product_name)
         if not products:
             return f"❌ לא מצאתי מוצר '{product_name}'"
+
+        # אם יש יותר ממוצר אחד - הצג רשימה לבחירה
+        if len(products) > 1:
+            # הגבל ל-10 תוצאות
+            show = products[:10]
+            sessions[from_number] = {
+                "pending": "product_choice",
+                "options": show,
+                "context": {"contact_name": contact_name, "account_name": account_name}
+            }
+            lines = [f"{i+1}. {p.get('Product_Name', '')} - ₪{p.get('Unit_Price', 0)}" for i, p in enumerate(show)]
+            extra = f"\n... ועוד {len(products) - 10}" if len(products) > 10 else ""
+            return f"🔍 מצאתי {len(products)} מוצרים עבור '{product_name}':\n" + "\n".join(lines) + extra + "\n\nכתוב מספר לבחירה:"
+
         product = products[0]
         print(f"Product found: {product.get('Product_Name')} id={product.get('id')} price={product.get('Unit_Price')}")
 
