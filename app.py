@@ -82,6 +82,8 @@ def find_contact_by_name_and_account(contact_name, account_name):
     contacts = zoho_get("Contacts/search", {"word": contact_name}) if contact_name else []
     accounts = zoho_get("Accounts/search", {"word": account_name}) if account_name else []
     account_ids = [a["id"] for a in accounts]
+    
+    # סינון לפי חשבון
     matches = []
     for c in contacts:
         c_acc = c.get("Account_Name")
@@ -90,6 +92,20 @@ def find_contact_by_name_and_account(contact_name, account_name):
                 matches.append(c)
         else:
             matches.append(c)
+    
+    # סינון נוסף: רק לקוחות שהשם שלהם באמת מכיל את מילת החיפוש
+    if contact_name and matches:
+        search_words = contact_name.strip().lower().split()
+        filtered = []
+        for c in matches:
+            full_name = c.get("Full_Name", "").lower()
+            # בדוק שלפחות מילה אחת מהחיפוש מופיעה בשם הלקוח
+            if any(w in full_name for w in search_words):
+                filtered.append(c)
+        if filtered:
+            matches = filtered
+            print(f"find_contact: filtered by name '{contact_name}' → {len(matches)} matches")
+    
     print(f"find_contact: '{contact_name}' @ '{account_name}' → {len(matches)} matches, {len(accounts)} accounts")
     return matches, accounts
 
