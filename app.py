@@ -615,9 +615,18 @@ def webhook():
         print(f"=== Fixed from_number: '{from_number}' ===")
         
         reply = handle_command(incoming_msg, from_number)
-        print(f"=== Reply: '{reply[:100]}' ===")
         
-        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=reply)
+        # הוסף ציטוט של ההודעה המקורית בתחילת התשובה
+        quote = f"📩 \"{incoming_msg}\"\n─────────────\n"
+        full_reply = quote + reply
+        
+        # Twilio WhatsApp מגביל ל-1600 תווים
+        if len(full_reply) > 1600:
+            full_reply = full_reply[:1597] + "..."
+        
+        print(f"=== Reply: '{full_reply[:100]}' ===")
+        
+        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=full_reply)
         print(f"=== Message sent successfully ===")
         return str(MessagingResponse())
     except Exception as e:
