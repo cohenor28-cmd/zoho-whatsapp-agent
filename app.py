@@ -305,13 +305,56 @@ def create_invoice(contact_id, account_id, product_id, price, contact_name, quan
         return result["data"][0]["details"]["id"]
     return None
 
+# מיפוי שם בעל בית (Account) לשם מושב (שדה picklist ב-Zoho)
+ACCOUNT_TO_MOSHAV = {
+    "אוהד": "אוהד",
+    "איציק לוטם": "שטח - עטיה",
+    "גבולות": "גבולות",
+    "חצבה": "חצבה",
+    "ישע": "ישע",
+    "יתד": "יתד",
+    "מבטחים": "מבטחים",
+    "מופ": "מופ",
+    "מסלול": "מסלול",
+    "עין הבשור": "עין הבשור",
+    "עמיעוז": "עמיעוז",
+    "פטיש": "פטיש",
+    "קיבוץ": "עין הבשור",
+    "רנן": "רנן",
+    "שדה אברהם": "יתד",
+    "שדה ניצן": "שדה ניצן",
+    "שרשרת": "שרשרת",
+    "תלמי אליהו": "תלמי אליהו",
+}
+
+def get_moshav_for_account(account_name):
+    """מחזיר את שם המושב לפי שם ה-Account. מחפש גם חלקית."""
+    # נסה התאמה מדויקת קודם
+    acc_lower = account_name.lower().strip()
+    for key, moshav in ACCOUNT_TO_MOSHAV.items():
+        if key in acc_lower or acc_lower in key:
+            return moshav
+    # אם לא מצאנו - נסה לחלץ את שם המושב משם ה-Account (בדרך כלל הפורמט הוא "מושב - שם בעל בית")
+    if " - " in account_name:
+        return account_name.split(" - ")[0].strip()
+    return None
+
 def create_zoho_contact(contact_name, account_id, account_name):
-    """יוצר לקוח חדש ב-Zoho CRM ומשייך אותו לבעל בית"""
-    # שם הלקוח - נשים ב-Last_Name (שדה חובה ב-Zoho)
-    payload = {"data": [{
+    """יוצר לקוח חדש ב-Zoho CRM עם מושב, טלפון ברירת מחדל, ושיוך לבעל בית"""
+    # מצא את המושב לפי ה-Account
+    moshav = get_moshav_for_account(account_name)
+    
+    contact_data = {
         "Last_Name": contact_name,
-        "Account_Name": {"id": account_id}
-    }]}
+        "Account_Name": {"id": account_id},
+        "Mobile": "0"  # טלפון ברירת מחדל
+    }
+    
+    # הוסף מושב אם מצאנו
+    if moshav:
+        contact_data["field"] = moshav  # api_name של שדה מושב
+    
+    payload = {"data": [contact_data]}
     result = zoho_post("Contacts", payload)
     print(f"create_zoho_contact result: {json.dumps(result, ensure_ascii=False)[:300]}")
     if result.get("data") and result["data"][0].get("code") == "SUCCESS":
@@ -712,9 +755,13 @@ def handle_command(message, from_number):
         # צור את הלקוח
         new_id = create_zoho_contact(contact_name, acc_id, acc_display)
         if new_id:
+            moshav = get_moshav_for_account(acc_display)
+            moshav_line = f"\n📍 {moshav}" if moshav else ""
             return (f"✅ לקוח חדש נוצר!\n"
                     f"👤 {contact_name}\n"
-                    f"🏠 {acc_display}")
+                    f"🏠 {acc_display}"
+                    f"{moshav_line}\n"
+                    f"📱 0")
         return "❌ שגיאה ביצירת הלקוח"
 
     elif action == "query":
