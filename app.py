@@ -232,7 +232,7 @@ def mark_invoice_paid(invoice_id, amount, method):
     }]})
     return result.get("data", [{}])[0].get("code") == "SUCCESS"
 
-def create_invoice(contact_id, account_id, product_id, price, contact_name):
+def create_invoice(contact_id, account_id, product_id, price, contact_name, quantity=1):
     today = date.today().strftime("%Y-%m-%d")
     payload = {"data": [{
         "Subject": f"חשבונית - {contact_name} - {today}",
@@ -242,7 +242,7 @@ def create_invoice(contact_id, account_id, product_id, price, contact_name):
         "Status": "לא שולם",
         "Invoiced_Items": [{
             "Product_Name": {"id": product_id},
-            "Quantity": 1,
+            "Quantity": quantity,
             "List_Price": price
         }]
     }]}
@@ -252,14 +252,17 @@ def create_invoice(contact_id, account_id, product_id, price, contact_name):
         return result["data"][0]["details"]["id"]
     return None
 
-def build_invoice_confirmation(contact, product, final_price=None):
+def build_invoice_confirmation(contact, product, final_price=None, quantity=1):
     acc_name = contact.get("Account_Name", {}).get("name", "") if isinstance(contact.get("Account_Name"), dict) else ""
     price = final_price if final_price is not None else product.get('Unit_Price', 0)
+    qty_text = f" x{quantity}" if quantity > 1 else ""
+    total = price * quantity if quantity > 1 else price
+    total_line = f"\n📊 סה\"כ: ₪{total}" if quantity > 1 else ""
     return (f"✅ חשבונית נוצרה!\n"
             f"👤 {contact['Full_Name']}\n"
             f"🏠 {acc_name}\n"
-            f"📦 {product.get('Product_Name')}\n"
-            f"💰 ₪{price} | לא שולם")
+            f"📦 {product.get('Product_Name')}{qty_text}\n"
+            f"💰 ₪{price} | לא שולם{total_line}")
 
 # ─── שיפור #2: AI intent parser - Gemini 2.0 Flash Lite (חוסך 2-5 שניות) ────
 SYSTEM_PROMPT = """
@@ -295,7 +298,7 @@ SYSTEM_PROMPT = """
 כשהמשתמש כותב שם מקוצר כמו "אילן" - זהה אותו כ-"אילן" (בעל בית מבטחים). כשכותב "שער דוד" - זהה כ-"שער דוד". כשכותב "דורון" - זהה כ-"דורון" (בעל בית אוהד). תמיד החזר רק את החלק הייחודי של שם בעל הבית בשדה account.
 
 הפקודות האפשריות:
-1. יצירת חשבונית: {"action": "create_invoice", "product": "...", "contact": "...", "account": "...", "price": 0}
+1. יצירת חשבונית: {"action": "create_invoice", "product": "...", "contact": "...", "account": "...", "price": 0, "quantity": 1}
 2. תשלום חשבונית: {"action": "payment", "contact": "...", "account": "...", "amount": 120, "method": "מזומן"}
 3. שאילתת חשבוניות פתוחות: {"action": "query", "type": "open_invoices", "account": "..."}
 4. לא מובן: {"action": "unknown"}
@@ -305,22 +308,24 @@ SYSTEM_PROMPT = """
 - אם יש שם מוצר בהודעה = תמיד action: create_invoice
 - contact = שם הלקוח הספציפי (אם לא ברור - שים "")
 - account = שם בעל הבית / מקום העבודה / הנכס (השם המקוצר כפי שמופיע ברשימה למעלה)
-- price = מחיר מותאם אישית. אם המשתמש כתב מספר אחרי שם המוצר (שאינו חלק משם המוצר כמו 050, 48 וכו') - זה המחיר. אם לא ציין מחיר - שים 0 (ייקח מחיר ברירת מחדל של המוצר)
+- price = מחיר מותאם אישית. מספר שמופיע אחרי שם המוצר (שאינו חלק משם המוצר) = מחיר. אם לא ציין מחיר - שים 0
+- quantity = כמות יחידות. מספר שמופיע לפני שם המוצר (בין 2 ל-30) = כמות. אם לא ציין כמות - שים 1. המספר חייב להיות בין 1 ל-30.
 - אמצעי תשלום: "מזומן", "העברה", "צ'ק", "אשראי" - ברירת מחדל "מזומן"
-- חשוב: מספרים כמו 050, 48, 155 שהם חלק משם המוצר - אל תשים ב-price! רק מספרים שמייצגים סכום כסף
+- חשוב: מספרים כמו 050, 48, 155 שהם חלק משם המוצר - אל תשים ב-price ולא ב-quantity! רק מספרים שמייצגים סכום כסף או כמות
+- הבחנה בין quantity ל-price: מספר לפני שם המוצר (2-30) = quantity. מספר אחרי שם המוצר = price.
 
 דוגמאות ליצירת חשבונית:
-- "050 סוויט אילן" → {"action": "create_invoice", "product": "050 סוויט", "contact": "", "account": "אילן", "price": 0}
-- "050 פלאפון קונצאי שלום חיים" → {"action": "create_invoice", "product": "050 פלאפון", "contact": "קונצאי", "account": "שלום חיים", "price": 0}
-- "בלוטוס קשת 120 סאק דורון" → {"action": "create_invoice", "product": "בלוטוס קשת", "contact": "סאק", "account": "דורון", "price": 120}
-- "מקל סלפי 85 טונגצאי שער דוד" → {"action": "create_invoice", "product": "מקל סלפי", "contact": "טונגצאי", "account": "שער דוד", "price": 85}
-- "מכשיר גלקסי 1200 רני ישע" → {"action": "create_invoice", "product": "מכשיר גלקסי", "contact": "רני", "account": "ישע", "price": 1200}
-- "בלוטוס JBL דורון" → {"action": "create_invoice", "product": "בלוטוס JBL", "contact": "", "account": "דורון", "price": 0}
-- "סוללה 48 אילן" → {"action": "create_invoice", "product": "סוללה 48", "contact": "", "account": "אילן", "price": 0}
-- "אוזניות JBL 150 אילן" → {"action": "create_invoice", "product": "אוזניות JBL", "contact": "", "account": "אילן", "price": 150}
-- "מזגן נייד 900 דורון" → {"action": "create_invoice", "product": "מזגן נייד", "contact": "", "account": "דורון", "price": 900}
-- "050 מיקמיק אילן" → {"action": "create_invoice", "product": "050 מיקמיק", "contact": "", "account": "אילן", "price": 0}
-- "כרטיס 050 גדול אידיאל" → {"action": "create_invoice", "product": "כרטיס 050 גדול", "contact": "", "account": "אידיאל", "price": 0}
+- "050 סוויט אילן" → {"action": "create_invoice", "product": "050 סוויט", "contact": "", "account": "אילן", "price": 0, "quantity": 1}
+- "3 בלוטוס קשת סאק דורון" → {"action": "create_invoice", "product": "בלוטוס קשת", "contact": "סאק", "account": "דורון", "price": 0, "quantity": 3}
+- "5 מקל סלפי טונגצאי שער דוד" → {"action": "create_invoice", "product": "מקל סלפי", "contact": "טונגצאי", "account": "שער דוד", "price": 0, "quantity": 5}
+- "3 בלוטוס קשת 120 סאק דורון" → {"action": "create_invoice", "product": "בלוטוס קשת", "contact": "סאק", "account": "דורון", "price": 120, "quantity": 3}
+- "בלוטוס קשת 120 סאק דורון" → {"action": "create_invoice", "product": "בלוטוס קשת", "contact": "סאק", "account": "דורון", "price": 120, "quantity": 1}
+- "050 פלאפון קונצאי שלום חיים" → {"action": "create_invoice", "product": "050 פלאפון", "contact": "קונצאי", "account": "שלום חיים", "price": 0, "quantity": 1}
+- "10 אוזניות JBL אילן" → {"action": "create_invoice", "product": "אוזניות JBL", "contact": "", "account": "אילן", "price": 0, "quantity": 10}
+- "10 אוזניות JBL 150 אילן" → {"action": "create_invoice", "product": "אוזניות JBL", "contact": "", "account": "אילן", "price": 150, "quantity": 10}
+- "סוללה 48 אילן" → {"action": "create_invoice", "product": "סוללה 48", "contact": "", "account": "אילן", "price": 0, "quantity": 1}
+- "מזגן נייד 900 דורון" → {"action": "create_invoice", "product": "מזגן נייד", "contact": "", "account": "דורון", "price": 900, "quantity": 1}
+- "2 מזגן נייד דורון" → {"action": "create_invoice", "product": "מזגן נייד", "contact": "", "account": "דורון", "price": 0, "quantity": 2}
 
 דוגמאות לתשלום:
 - "טונגצאי בוי שער דוד שילם 120 מזומן" → {"action": "payment", "contact": "טונגצאי בוי", "account": "שער דוד", "amount": 120, "method": "מזומן"}
@@ -452,26 +457,28 @@ def handle_command(message, from_number):
         contact_name = context["contact_name"]
         account_name = context["account_name"]
         custom_price = context.get("custom_price", 0)
+        quantity = context.get("quantity", 1)
         final_price = custom_price if custom_price and custom_price > 0 else product.get("Unit_Price", 0)
         contacts, accounts = find_contact_by_name_and_account(contact_name, account_name)
         if not contacts:
             return f"❌ לא מצאתי לקוח '{contact_name}' אצל '{account_name}'"
         if len(contacts) > 1:
-            sessions[from_number] = {"pending": "contact_choice", "options": contacts, "context": {"product": product, "custom_price": custom_price}}
+            sessions[from_number] = {"pending": "contact_choice", "options": contacts, "context": {"product": product, "custom_price": custom_price, "quantity": quantity}}
             names = "\n".join([f"{i+1}. {c['Full_Name']}" for i, c in enumerate(contacts)])
             return f"מצאתי כמה לקוחות:\n{names}\n\nכתוב חלק מהשם או מספר לבחירה:"
         contact = contacts[0]
         acc_id = contact.get("Account_Name", {}).get("id") if isinstance(contact.get("Account_Name"), dict) else None
         if not acc_id and accounts:
             acc_id = accounts[0]["id"]
-        inv_id = create_invoice(contact["id"], acc_id, product["id"], final_price, contact["Full_Name"])
-        return build_invoice_confirmation(contact, product, final_price) if inv_id else "❌ שגיאה ביצירת החשבונית"
+        inv_id = create_invoice(contact["id"], acc_id, product["id"], final_price, contact["Full_Name"], quantity)
+        return build_invoice_confirmation(contact, product, final_price, quantity) if inv_id else "❌ שגיאה ביצירת החשבונית"
 
     if pending == "contact_choice":
         options = session["options"]
         context = session["context"]
         product = context["product"]
         custom_price = context.get("custom_price", 0)
+        quantity = context.get("quantity", 1)
         final_price = custom_price if custom_price and custom_price > 0 else product.get("Unit_Price", 0)
         chosen = pick_best_match(options, message)
         if not chosen:
@@ -479,8 +486,8 @@ def handle_command(message, from_number):
             return f"לא הצלחתי לזהות. בחר מספר:\n{names}"
         sessions.pop(from_number, None)
         acc_id = chosen.get("Account_Name", {}).get("id") if isinstance(chosen.get("Account_Name"), dict) else None
-        inv_id = create_invoice(chosen["id"], acc_id, product["id"], final_price, chosen["Full_Name"])
-        return build_invoice_confirmation(chosen, product, final_price) if inv_id else "❌ שגיאה ביצירת החשבונית"
+        inv_id = create_invoice(chosen["id"], acc_id, product["id"], final_price, chosen["Full_Name"], quantity)
+        return build_invoice_confirmation(chosen, product, final_price, quantity) if inv_id else "❌ שגיאה ביצירת החשבונית"
 
     if pending == "payment_contact_choice":
         options = session["options"]
@@ -522,6 +529,8 @@ def handle_command(message, from_number):
         contact_name = intent.get("contact", "")
         account_name = intent.get("account", "")
         custom_price = intent.get("price", 0)  # מחיר מותאם אישית (0 = מחיר ברירת מחדל)
+        quantity = intent.get("quantity", 1)  # כמות יחידות (1 = ברירת מחדל)
+        quantity = max(1, min(30, int(quantity))) if quantity else 1  # הגבל ל-1-30
 
         products = find_product(product_name)
         if not products:
@@ -545,7 +554,7 @@ def handle_command(message, from_number):
                 sessions[from_number] = {
                     "pending": "product_choice",
                     "options": show,
-                    "context": {"contact_name": contact_name, "account_name": account_name, "custom_price": custom_price}
+                    "context": {"contact_name": contact_name, "account_name": account_name, "custom_price": custom_price, "quantity": quantity}
                 }
                 lines = [f"{i+1}. {p.get('Product_Name', '')} - ₪{p.get('Unit_Price', 0)}" for i, p in enumerate(show)]
                 extra = f"\n... ועוד {len(products) - 10}" if len(products) > 10 else ""
@@ -560,15 +569,15 @@ def handle_command(message, from_number):
         if not contacts:
             return f"❌ לא מצאתי לקוח '{contact_name}' אצל '{account_name}'"
         if len(contacts) > 1:
-            sessions[from_number] = {"pending": "contact_choice", "options": contacts, "context": {"product": product, "custom_price": custom_price}}
+            sessions[from_number] = {"pending": "contact_choice", "options": contacts, "context": {"product": product, "custom_price": custom_price, "quantity": quantity}}
             names = "\n".join([f"{i+1}. {c['Full_Name']}" for i, c in enumerate(contacts)])
             return f"מצאתי כמה לקוחות:\n{names}\n\nכתוב חלק מהשם או מספר לבחירה:"
         contact = contacts[0]
         acc_id = contact.get("Account_Name", {}).get("id") if isinstance(contact.get("Account_Name"), dict) else None
         if not acc_id and accounts:
             acc_id = accounts[0]["id"]
-        inv_id = create_invoice(contact["id"], acc_id, product["id"], final_price, contact["Full_Name"])
-        return build_invoice_confirmation(contact, product, final_price) if inv_id else "❌ שגיאה ביצירת החשבונית"
+        inv_id = create_invoice(contact["id"], acc_id, product["id"], final_price, contact["Full_Name"], quantity)
+        return build_invoice_confirmation(contact, product, final_price, quantity) if inv_id else "❌ שגיאה ביצירת החשבונית"
 
     elif action == "payment":
         return handle_payment(intent.get("contact", ""), intent.get("account", ""),
