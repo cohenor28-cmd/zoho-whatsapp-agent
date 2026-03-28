@@ -423,6 +423,8 @@ def webhook():
         print(f"=== WEBHOOK: msg='{incoming_msg}' from='{from_number}' ===")
         
         # Ensure from_number is in correct format
+        # URL encoding turns + into space, fix it
+        from_number = from_number.replace(" ", "+")
         if from_number and not from_number.startswith("whatsapp:"):
             from_number = f"whatsapp:{from_number}"
         if "whatsapp:" in from_number and "+" not in from_number:
