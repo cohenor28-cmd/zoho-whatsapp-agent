@@ -511,10 +511,10 @@ SYSTEM_PROMPT = """
 """
 
 def parse_intent(message):
-    """שיפור: משתמש ב-gemini-2.0-flash-lite - הכי מהיר!"""
+    """שיפור: משתמש ב-gemini-2.0-flash - מהיר ומדויק!"""
     if not GEMINI_API_KEY:
         return {"action": "unknown"}
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     payload = {
         "contents": [
             {
@@ -695,7 +695,38 @@ def handle_command(message, from_number):
                     f"📄 {chosen.get('Subject', '')}")
         return "❌ שגיאה בעדכון התשלום"
 
-    intent = parse_intent(message)
+    # === Fallback: זיהוי ידני של פקודות מיוחדות לפני Gemini ===
+    msg_lower = message.strip().lower()
+    intent = None
+    
+    # זיהוי "קווים פעילים" או "חשבונית קווים פעילים"
+    if "קווים פעילים" in msg_lower:
+        words = message.strip().split()
+        # הסר את המילים "קווים", "פעילים", "חשבונית", "פתח"
+        skip_words = ["קווים", "פעילים", "חשבונית", "פתח", "לי", "כמה", "יש", "ל", "של"]
+        remaining = [w for w in words if w.lower() not in skip_words]
+        
+        if "חשבונית" in msg_lower:
+            # חשבונית קווים פעילים [לקוח] [בעל בית]
+            # נניח שהמילה הראשונה היא הלקוח והשאר בעל הבית
+            if len(remaining) >= 2:
+                contact = remaining[0]
+                account = " ".join(remaining[1:])
+            elif len(remaining) == 1:
+                contact = ""
+                account = remaining[0]
+            else:
+                contact = ""
+                account = ""
+            intent = {"action": "active_lines_invoice", "contact": contact, "account": account}
+        else:
+            # קווים פעילים [בעל בית]
+            account = " ".join(remaining) if remaining else ""
+            intent = {"action": "active_lines", "account": account}
+        print(f"Fallback detected active_lines: {intent}")
+    
+    if not intent:
+        intent = parse_intent(message)
     action = intent.get("action")
     print(f"action={action}, intent={intent}")
 
