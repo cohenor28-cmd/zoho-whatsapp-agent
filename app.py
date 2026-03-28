@@ -227,6 +227,33 @@ def find_contact_by_name_and_account(contact_name, account_name):
     print(f"find_contact: '{contact_name}' @ '{account_name}' → {len(matches)} matches, {len(accounts)} accounts")
     return matches, accounts
 
+def best_account_match(accounts, search_name):
+    """בוחר את ההתאמה הטובה ביותר מרשימת Accounts לפי שם חיפוש.
+    עדיפות: 1) התאמה מדויקת על חלק בעל הבית (אחרי ' - ')
+    2) התאמה מדויקת על שם מלא 3) השם הקצר ביותר שמכיל את החיפוש"""
+    if not accounts:
+        return None
+    if len(accounts) == 1:
+        return accounts[0]
+    search_lower = search_name.strip().lower()
+    # עדיפות 1: התאמה מדויקת על חלק בעל הבית
+    for a in accounts:
+        name = a.get("Account_Name", "")
+        if " - " in name:
+            landlord_part = name.split(" - ", 1)[1].strip().lower()
+            if landlord_part == search_lower:
+                return a
+    # עדיפות 2: התאמה מדויקת על שם מלא
+    for a in accounts:
+        if a.get("Account_Name", "").lower() == search_lower:
+            return a
+    # עדיפות 3: הכי קצר שמכיל את החיפוש
+    containing = [a for a in accounts if search_lower in a.get("Account_Name", "").lower()]
+    if containing:
+        containing.sort(key=lambda a: len(a.get("Account_Name", "")))
+        return containing[0]
+    return accounts[0]
+
 def find_product(product_name):
     """שיפור: חיפוש מוצר מהקאש בזיכרון במקום API call כל פעם"""
     if not product_name:
@@ -511,10 +538,10 @@ SYSTEM_PROMPT = """
 """
 
 def parse_intent(message):
-    """שיפור: משתמש ב-gemini-2.0-flash - מהיר ומדויק!"""
+    """שיפור: משתמש ב-gemini-2.5-flash - מהיר ומדויק!"""
     if not GEMINI_API_KEY:
         return {"action": "unknown"}
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
     payload = {
         "contents": [
             {
@@ -821,13 +848,7 @@ def handle_command(message, from_number):
         if not accounts:
             return f"❌ לא מצאתי בעל בית בשם '{account_name}'"
         
-        # אם יש כמה תוצאות - נסה לסנן לפי שם
-        if len(accounts) > 1:
-            filtered = [a for a in accounts if account_name.lower() in a.get("Account_Name", "").lower()]
-            if len(filtered) == 1:
-                accounts = filtered
-        
-        account = accounts[0]
+        account = best_account_match(accounts, account_name)
         acc_id = account["id"]
         acc_display = account.get("Account_Name", account_name)
         
@@ -859,11 +880,7 @@ def handle_command(message, from_number):
         accounts = zoho_get("Accounts/search", {"word": account_name})
         if not accounts:
             return f"❌ לא מצאתי בעל בית בשם '{account_name}'"
-        if len(accounts) > 1:
-            filtered = [a for a in accounts if account_name.lower() in a.get("Account_Name", "").lower()]
-            if len(filtered) >= 1:
-                accounts = filtered
-        account = accounts[0]
+        account = best_account_match(accounts, account_name)
         acc_id = account["id"]
         acc_display = account.get("Account_Name", account_name)
         total_lines, active_contacts = get_active_lines_for_account(acc_id, acc_display)
@@ -884,11 +901,7 @@ def handle_command(message, from_number):
         accounts = zoho_get("Accounts/search", {"word": account_name})
         if not accounts:
             return f"❌ לא מצאתי בעל בית בשם '{account_name}'"
-        if len(accounts) > 1:
-            filtered = [a for a in accounts if account_name.lower() in a.get("Account_Name", "").lower()]
-            if len(filtered) >= 1:
-                accounts = filtered
-        account = accounts[0]
+        account = best_account_match(accounts, account_name)
         acc_id = account["id"]
         acc_display = account.get("Account_Name", account_name)
         # ספור קווים פעילים של בעל הבית
