@@ -417,11 +417,35 @@ def handle_command(message, from_number):
 # ─── Webhook ───────────────────────────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    incoming_msg = request.values.get("Body", "").strip()
-    from_number  = request.values.get("From", "")
-    reply = handle_command(incoming_msg, from_number)
-    twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=reply)
-    return str(MessagingResponse())
+    try:
+        incoming_msg = request.values.get("Body", "").strip()
+        from_number  = request.values.get("From", "")
+        print(f"=== WEBHOOK: msg='{incoming_msg}' from='{from_number}' ===")
+        
+        # Ensure from_number is in correct format
+        if from_number and not from_number.startswith("whatsapp:"):
+            from_number = f"whatsapp:{from_number}"
+        if "whatsapp:" in from_number and "+" not in from_number:
+            # Fix missing + sign
+            from_number = from_number.replace("whatsapp:", "whatsapp:+")
+        
+        print(f"=== Fixed from_number: '{from_number}' ===")
+        
+        reply = handle_command(incoming_msg, from_number)
+        print(f"=== Reply: '{reply[:100]}' ===")
+        
+        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=reply)
+        print(f"=== Message sent successfully ===")
+        return str(MessagingResponse())
+    except Exception as e:
+        print(f"=== WEBHOOK ERROR: {e} ===")
+        # Try to send error message back
+        try:
+            resp = MessagingResponse()
+            resp.message(f"❌ שגיאה: {str(e)[:100]}")
+            return str(resp)
+        except:
+            return str(MessagingResponse()), 200
 
 @app.route("/health")
 def health():
