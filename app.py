@@ -117,36 +117,46 @@ def find_product(product_name):
 
     print(f"find_product: searching for '{product_name}'")
     product_lower = product_name.strip().lower()
+    search_words = product_lower.split()
 
     # חיפוש ישיר ב-Zoho לפי שם
     results = zoho_get("Products/search", {"word": product_name, "fields": "Product_Name,Unit_Price,id"})
     if results:
         # סינון - רק מוצרים שמכילים את כל המילים שהמשתמש כתב
-        words = product_lower.split()
         filtered = []
         for p in results:
             pname = p.get("Product_Name", "").lower()
-            if all(w in pname for w in words):
+            if all(w in pname for w in search_words):
                 filtered.append(p)
-        # אם יש התאמה מדויקת - החזר אותה
         if filtered:
             print(f"find_product: filtered to {len(filtered)} results for '{product_name}'")
             return filtered
-        # אם אין סינון מדויק - החזר הכל
-        print(f"find_product: found {len(results)} results for '{product_name}' (no exact filter match, returning all)")
+        # אם אין סינון מדויק - סנן לפי לפחות מילה אחת
+        partial = []
+        for p in results:
+            pname = p.get("Product_Name", "").lower()
+            if any(w in pname for w in search_words):
+                partial.append(p)
+        if partial:
+            print(f"find_product: partial filter to {len(partial)} results for '{product_name}'")
+            return partial
+        print(f"find_product: found {len(results)} results for '{product_name}' (no filter match, returning all)")
         return results
 
     # אם לא נמצא - נסה חיפוש עם מילה ראשונה בלבד
-    words = product_name.strip().split()
-    if len(words) > 1:
-        first_word = words[0]
+    if len(search_words) > 1:
+        first_word = search_words[0]
         print(f"find_product: retry with first word '{first_word}'")
         results2 = zoho_get("Products/search", {"word": first_word, "fields": "Product_Name,Unit_Price,id"})
         if results2:
             # סנן לפי כל המילים
-            filtered2 = [p for p in results2 if all(w in p.get("Product_Name", "").lower() for w in product_lower.split())]
+            filtered2 = [p for p in results2 if all(w in p.get("Product_Name", "").lower() for w in search_words)]
             if filtered2:
                 return filtered2
+            # סנן לפי לפחות מילה אחת
+            partial2 = [p for p in results2 if any(w in p.get("Product_Name", "").lower() for w in search_words)]
+            if partial2:
+                return partial2
             # אם אין - חפש התאמה חלקית
             for p in results2:
                 pname = p.get("Product_Name", "").lower()
@@ -460,18 +470,29 @@ def handle_command(message, from_number):
         if not products:
             return f"❌ לא מצאתי מוצר '{product_name}'"
 
-        # אם יש יותר ממוצר אחד - הצג רשימה לבחירה
+        # אם יש יותר ממוצר אחד - נסה לצמצם
         if len(products) > 1:
-            # הגבל ל-10 תוצאות
-            show = products[:10]
-            sessions[from_number] = {
-                "pending": "product_choice",
-                "options": show,
-                "context": {"contact_name": contact_name, "account_name": account_name}
-            }
-            lines = [f"{i+1}. {p.get('Product_Name', '')} - ₪{p.get('Unit_Price', 0)}" for i, p in enumerate(show)]
-            extra = f"\n... ועוד {len(products) - 10}" if len(products) > 10 else ""
-            return f"🔍 מצאתי {len(products)} מוצרים עבור '{product_name}':\n" + "\n".join(lines) + extra + "\n\nכתוב מספר לבחירה:"
+            # סינון נוסף: רק מוצרים שהשם שלהם באמת מכיל את כל מילות החיפוש
+            product_words = product_name.strip().lower().split()
+            exact_matches = [p for p in products if all(w in p.get("Product_Name", "").lower() for w in product_words)]
+            if len(exact_matches) == 1:
+                # נשאר רק מוצר אחד - בחר אוטומטית!
+                products = exact_matches
+                print(f"find_product: auto-selected '{exact_matches[0].get('Product_Name')}' (only exact match)")
+            elif exact_matches:
+                products = exact_matches  # צמצם לרשימה המסוננת
+            
+            # אם עדיין יותר ממוצר אחד - הצג רשימה
+            if len(products) > 1:
+                show = products[:10]
+                sessions[from_number] = {
+                    "pending": "product_choice",
+                    "options": show,
+                    "context": {"contact_name": contact_name, "account_name": account_name}
+                }
+                lines = [f"{i+1}. {p.get('Product_Name', '')} - ₪{p.get('Unit_Price', 0)}" for i, p in enumerate(show)]
+                extra = f"\n... ועוד {len(products) - 10}" if len(products) > 10 else ""
+                return f"🔍 מצאתי {len(products)} מוצרים עבור '{product_name}':\n" + "\n".join(lines) + extra + "\n\nכתוב מספר לבחירה:"
 
         product = products[0]
         print(f"Product found: {product.get('Product_Name')} id={product.get('id')} price={product.get('Unit_Price')}")
