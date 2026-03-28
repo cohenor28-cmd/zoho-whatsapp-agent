@@ -1,0 +1,7 @@
+Active Lines Fields in Contacts module:
+- field11 = "קווים פעילים" (integer) - number of active lines per contact
+- field12 = "מספרי קווים" (textarea) - line numbers
+- field5 = "קוד" (integer)
+
+The dashboard "קווים פעילים - בעלי בית" likely aggregates field11 grouped by Account_Name.
+We can use COQL to get this data directly without needing the dashboard.

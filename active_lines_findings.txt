@@ -1,0 +1,7 @@
+Key findings:
+- field11 = "קווים פעילים" (integer) - per contact, value is 1 or None/0
+- field12 = "מספרי קווים" (textarea) - phone number of the line
+- Account_Name format: "מושב - שם בעל בית" e.g. "מבטחים - אילן"
+- To get total active lines for a landlord: search all contacts under that account where field11 > 0, count them
+- COQL not available (scope mismatch), use regular search API instead
+- Can search by account name and filter by field11

@@ -98,6 +98,20 @@ def zoho_post(endpoint, data):
     print(f"zoho_post {endpoint} status={r.status_code}")
     return r.json()
 
+def zoho_get_full(endpoint, params=None):
+    """כמו zoho_get אבל מחזיר גם info (לפגינציה)"""
+    token, domain = get_access_token()
+    headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+    r = requests.get(f"{domain}/crm/v5/{endpoint}", headers=headers, params=params)
+    if r.status_code == 401:
+        _token_cache["expires_at"] = 0
+        token, domain = get_access_token()
+        headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+        r = requests.get(f"{domain}/crm/v5/{endpoint}", headers=headers, params=params)
+    if r.status_code in [200, 201]:
+        return r.json().get("data", []), r.json().get("info", {})
+    return [], {}
+
 def zoho_put(endpoint, data):
     token, domain = get_access_token()
     headers = {"Authorization": f"Zoho-oauthtoken {token}", "Content-Type": "application/json"}
@@ -305,6 +319,36 @@ def create_invoice(contact_id, account_id, product_id, price, contact_name, quan
         return result["data"][0]["details"]["id"]
     return None
 
+def get_active_lines_for_account(account_id, account_name):
+    """מחזיר את מספר הקווים הפעילים של בעל בית לפי field11 (קווים פעילים) בלקוחות שלו"""
+    print(f"get_active_lines: searching for account {account_name} (id={account_id})")
+    page = 1
+    total_lines = 0
+    active_contacts = []
+    while True:
+        contacts, info = zoho_get_full("Contacts/search", {
+            "criteria": f"(Account_Name:equals:{account_id})",
+            "fields": "Full_Name,field11,field12",
+            "per_page": 200,
+            "page": page
+        })
+        if not contacts:
+            break
+        for c in contacts:
+            lines = c.get("field11", 0) or 0
+            if lines > 0:
+                total_lines += lines
+                active_contacts.append({
+                    "name": c.get("Full_Name", ""),
+                    "lines": lines,
+                    "numbers": c.get("field12", "")
+                })
+        if not info.get("more_records", False):
+            break
+        page += 1
+    print(f"get_active_lines: {account_name} = {total_lines} active lines from {len(active_contacts)} contacts")
+    return total_lines, active_contacts
+
 # מיפוי שם בעל בית (Account) לשם מושב (שדה picklist ב-Zoho)
 ACCOUNT_TO_MOSHAV = {
     "אוהד": "אוהד",
@@ -411,12 +455,16 @@ SYSTEM_PROMPT = """
 2. תשלום חשבונית: {"action": "payment", "contact": "...", "account": "...", "amount": 120, "method": "מזומן"}
 3. שאילתת חשבוניות פתוחות: {"action": "query", "type": "open_invoices", "account": "..."}
 4. הוספת לקוח חדש: {"action": "create_contact", "contact": "...", "account": "..."}
-5. לא מובן: {"action": "unknown"}
+5. שאילתת קווים פעילים: {"action": "active_lines", "account": "..."}
+6. חשבונית קווים פעילים: {"action": "active_lines_invoice", "contact": "...", "account": "..."}
+7. לא מובן: {"action": "unknown"}
 
 כללים:
 - "שילם", "שולם", "שלם", "תשלום", "מזומן" בלי מוצר = action: payment
 - "הוסף לקוח", "לקוח חדש", "פתח לקוח", "צור לקוח" = action: create_contact
-- אם יש שם מוצר בהודעה (ואין "הוסף לקוח"/"לקוח חדש") = תמיד action: create_invoice
+- "קווים פעילים" + שם בעל בית בלבד (בלי שם לקוח) = action: active_lines
+- "חשבונית קווים פעילים" + שם לקוח + שם בעל בית = action: active_lines_invoice
+- אם יש שם מוצר בהודעה (ואין "הוסף לקוח"/"לקוח חדש"/"קווים פעילים") = תמיד action: create_invoice
 - contact = שם הלקוח הספציפי (אם לא ברור - שים "")
 - account = שם בעל הבית / מקום העבודה / הנכס (השם המקוצר כפי שמופיע ברשימה למעלה)
 - price = מחיר מותאם אישית. מספר שמופיע אחרי שם המוצר (שאינו חלק משם המוצר) = מחיר. אם לא ציין מחיר - שים 0
@@ -444,6 +492,15 @@ SYSTEM_PROMPT = """
 - "לקוח חדש סוויט אילן" → {"action": "create_contact", "contact": "סוויט", "account": "אילן"}
 - "פתח לקוח טונגצאי דורון" → {"action": "create_contact", "contact": "טונגצאי", "account": "דורון"}
 - "צור לקוח חדש בשם מוחמד לשער דוד" → {"action": "create_contact", "contact": "מוחמד", "account": "שער דוד"}
+
+דוגמאות לקווים פעילים:
+- "קווים פעילים אילן" → {"action": "active_lines", "account": "אילן"}
+- "כמה קווים פעילים יש לדורון" → {"action": "active_lines", "account": "דורון"}
+- "קווים פעילים שער דוד" → {"action": "active_lines", "account": "שער דוד"}
+
+דוגמאות לחשבונית קווים פעילים:
+- "חשבונית קווים פעילים סומניק אילן" → {"action": "active_lines_invoice", "contact": "סומניק", "account": "אילן"}
+- "פתח חשבונית קווים פעילים טונגצאי דורון" → {"action": "active_lines_invoice", "contact": "טונגצאי", "account": "דורון"}
 
 דוגמאות לתשלום:
 - "טונגצאי בוי שער דוד שילם 120 מזומן" → {"action": "payment", "contact": "טונגצאי בוי", "account": "שער דוד", "amount": 120, "method": "מזומן"}
@@ -764,6 +821,80 @@ def handle_command(message, from_number):
                     f"📱 0")
         return "❌ שגיאה ביצירת הלקוח"
 
+    elif action == "active_lines":
+        account_name = intent.get("account", "")
+        if not account_name:
+            return "❌ לא ציינת שם בעל בית. לדוגמה: קווים פעילים אילן"
+        accounts = zoho_get("Accounts/search", {"word": account_name})
+        if not accounts:
+            return f"❌ לא מצאתי בעל בית בשם '{account_name}'"
+        if len(accounts) > 1:
+            filtered = [a for a in accounts if account_name.lower() in a.get("Account_Name", "").lower()]
+            if len(filtered) >= 1:
+                accounts = filtered
+        account = accounts[0]
+        acc_id = account["id"]
+        acc_display = account.get("Account_Name", account_name)
+        total_lines, active_contacts = get_active_lines_for_account(acc_id, acc_display)
+        if total_lines == 0:
+            return f"📊 {acc_display}\n🔌 0 קווים פעילים"
+        details = "\n".join([f"  • {c['name']} ({c['lines']})" for c in active_contacts[:20]])
+        extra = f"\n  ... ועוד {len(active_contacts) - 20}" if len(active_contacts) > 20 else ""
+        return (f"📊 {acc_display}\n"
+                f"🔌 {total_lines} קווים פעילים\n"
+                f"👥 {len(active_contacts)} לקוחות:\n{details}{extra}")
+
+    elif action == "active_lines_invoice":
+        contact_name = intent.get("contact", "")
+        account_name = intent.get("account", "")
+        if not contact_name or not account_name:
+            return "❌ חסר שם לקוח או בעל בית. לדוגמה: חשבונית קווים פעילים סומניק אילן"
+        # מצא את בעל הבית
+        accounts = zoho_get("Accounts/search", {"word": account_name})
+        if not accounts:
+            return f"❌ לא מצאתי בעל בית בשם '{account_name}'"
+        if len(accounts) > 1:
+            filtered = [a for a in accounts if account_name.lower() in a.get("Account_Name", "").lower()]
+            if len(filtered) >= 1:
+                accounts = filtered
+        account = accounts[0]
+        acc_id = account["id"]
+        acc_display = account.get("Account_Name", account_name)
+        # ספור קווים פעילים של בעל הבית
+        total_lines, active_contacts = get_active_lines_for_account(acc_id, acc_display)
+        if total_lines == 0:
+            return f"❌ אין קווים פעילים ל-{acc_display}"
+        # מצא את המוצר "כרטיס 050 - קו פעיל אידיאל"
+        products = find_product("כרטיס 050 קו פעיל אידיאל")
+        if not products:
+            return f"❌ לא מצאתי מוצר 'כרטיס 050 - קו פעיל אידיאל'"
+        product = products[0]
+        # מצא את הלקוח
+        contacts, _ = find_contact_by_name_and_account(contact_name, account_name)
+        if not contacts:
+            return f"❌ לא מצאתי לקוח '{contact_name}' אצל '{account_name}'"
+        if len(contacts) > 1:
+            sessions[from_number] = {
+                "pending": "contact_choice",
+                "options": contacts,
+                "context": {"product": product, "custom_price": 0, "quantity": total_lines}
+            }
+            names = "\n".join([f"{i+1}. {c['Full_Name']}" for i, c in enumerate(contacts)])
+            return f"🔌 {total_lines} קווים פעילים ל-{acc_display}\n\nמצאתי כמה לקוחות:\n{names}\n\nכתוב חלק מהשם או מספר לבחירה:"
+        contact = contacts[0]
+        c_acc_id = contact.get("Account_Name", {}).get("id") if isinstance(contact.get("Account_Name"), dict) else acc_id
+        final_price = product.get("Unit_Price", 0)
+        inv_id = create_invoice(contact["id"], c_acc_id, product["id"], final_price, contact["Full_Name"], total_lines)
+        if inv_id:
+            acc_name = contact.get("Account_Name", {}).get("name", acc_display) if isinstance(contact.get("Account_Name"), dict) else acc_display
+            return (f"✅ חשבונית קווים פעילים נוצרה!\n"
+                    f"👤 {contact['Full_Name']}\n"
+                    f"🏠 {acc_name}\n"
+                    f"📦 {product.get('Product_Name')} x{total_lines}\n"
+                    f"🔌 {total_lines} קווים פעילים\n"
+                    f"💰 ₪{final_price} ליחידה | סה\"כ ₪{final_price * total_lines}")
+        return "❌ שגיאה ביצירת החשבונית"
+
     elif action == "query":
         account_name = intent.get("account", "")
         invoices = zoho_get("Invoices/search", {"word": account_name})
@@ -776,7 +907,7 @@ def handle_command(message, from_number):
     return ("❓ לא הבנתי. לדוגמה:\n"
             "• '050 לטייה של איציק' - חשבונית חדשה\n"
             "• 'טונגצאי בוי שער דוד שילם 120 מזומן' - תשלום\n"
-            "• 'כמה חשבוניות פתוחות לאילן?' - שאילתה")
+            "• 'קווים פעילים אילן' - בדיקת קווים")
 
 # ─── Webhook ───────────────────────────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])

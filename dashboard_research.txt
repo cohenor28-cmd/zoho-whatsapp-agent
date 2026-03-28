@@ -1,0 +1,11 @@
+Zoho CRM Dashboard API Research:
+- Zoho CRM does NOT have REST API for dashboards (confirmed by Zoho support)
+- Alternative approach: Use COQL (CRM Object Query Language) to query the underlying data directly
+- COQL supports COUNT, GROUP BY, aggregate functions
+- Dashboard ID: 2617612000006452227
+
+Alternative approach:
+- The dashboard "קווים פעילים - בעלי בית" is based on underlying CRM data
+- We need to find which module/field represents "קו פעיל" (active line)
+- Then use COQL to count active lines per account (landlord)
+- This is actually more reliable and faster than scraping dashboard
