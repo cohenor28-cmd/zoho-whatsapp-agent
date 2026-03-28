@@ -305,6 +305,19 @@ def create_invoice(contact_id, account_id, product_id, price, contact_name, quan
         return result["data"][0]["details"]["id"]
     return None
 
+def create_zoho_contact(contact_name, account_id, account_name):
+    """יוצר לקוח חדש ב-Zoho CRM ומשייך אותו לבעל בית"""
+    # שם הלקוח - נשים ב-Last_Name (שדה חובה ב-Zoho)
+    payload = {"data": [{
+        "Last_Name": contact_name,
+        "Account_Name": {"id": account_id}
+    }]}
+    result = zoho_post("Contacts", payload)
+    print(f"create_zoho_contact result: {json.dumps(result, ensure_ascii=False)[:300]}")
+    if result.get("data") and result["data"][0].get("code") == "SUCCESS":
+        return result["data"][0]["details"]["id"]
+    return None
+
 def build_invoice_confirmation(contact, product, final_price=None, quantity=1):
     acc_name = contact.get("Account_Name", {}).get("name", "") if isinstance(contact.get("Account_Name"), dict) else ""
     price = final_price if final_price is not None else product.get('Unit_Price', 0)
@@ -354,11 +367,13 @@ SYSTEM_PROMPT = """
 1. יצירת חשבונית: {"action": "create_invoice", "product": "...", "contact": "...", "account": "...", "price": 0, "quantity": 1}
 2. תשלום חשבונית: {"action": "payment", "contact": "...", "account": "...", "amount": 120, "method": "מזומן"}
 3. שאילתת חשבוניות פתוחות: {"action": "query", "type": "open_invoices", "account": "..."}
-4. לא מובן: {"action": "unknown"}
+4. הוספת לקוח חדש: {"action": "create_contact", "contact": "...", "account": "..."}
+5. לא מובן: {"action": "unknown"}
 
 כללים:
 - "שילם", "שולם", "שלם", "תשלום", "מזומן" בלי מוצר = action: payment
-- אם יש שם מוצר בהודעה = תמיד action: create_invoice
+- "הוסף לקוח", "לקוח חדש", "פתח לקוח", "צור לקוח" = action: create_contact
+- אם יש שם מוצר בהודעה (ואין "הוסף לקוח"/"לקוח חדש") = תמיד action: create_invoice
 - contact = שם הלקוח הספציפי (אם לא ברור - שים "")
 - account = שם בעל הבית / מקום העבודה / הנכס (השם המקוצר כפי שמופיע ברשימה למעלה)
 - price = מחיר מותאם אישית. מספר שמופיע אחרי שם המוצר (שאינו חלק משם המוצר) = מחיר. אם לא ציין מחיר - שים 0
@@ -379,6 +394,13 @@ SYSTEM_PROMPT = """
 - "סוללה 48 אילן" → {"action": "create_invoice", "product": "סוללה 48", "contact": "", "account": "אילן", "price": 0, "quantity": 1}
 - "מזגן נייד 900 דורון" → {"action": "create_invoice", "product": "מזגן נייד", "contact": "", "account": "דורון", "price": 900, "quantity": 1}
 - "2 מזגן נייד דורון" → {"action": "create_invoice", "product": "מזגן נייד", "contact": "", "account": "דורון", "price": 0, "quantity": 2}
+
+דוגמאות להוספת לקוח:
+- "הוסף לקוח חדש בשם סוויט לבעל הבית אילן" → {"action": "create_contact", "contact": "סוויט", "account": "אילן"}
+- "הוסף לקוח סוויט לאילן" → {"action": "create_contact", "contact": "סוויט", "account": "אילן"}
+- "לקוח חדש סוויט אילן" → {"action": "create_contact", "contact": "סוויט", "account": "אילן"}
+- "פתח לקוח טונגצאי דורון" → {"action": "create_contact", "contact": "טונגצאי", "account": "דורון"}
+- "צור לקוח חדש בשם מוחמד לשער דוד" → {"action": "create_contact", "contact": "מוחמד", "account": "שער דוד"}
 
 דוגמאות לתשלום:
 - "טונגצאי בוי שער דוד שילם 120 מזומן" → {"action": "payment", "contact": "טונגצאי בוי", "account": "שער דוד", "amount": 120, "method": "מזומן"}
@@ -654,6 +676,46 @@ def handle_command(message, from_number):
         if result.get("data", [{}])[0].get("code") == "SUCCESS":
             return f"✅ עודכן ל{label}\n👤 {contact['Full_Name']}"
         return "❌ שגיאה בעדכון"
+
+    elif action == "create_contact":
+        contact_name = intent.get("contact", "")
+        account_name = intent.get("account", "")
+        if not contact_name:
+            return "❌ לא ציינת שם ללקוח. לדוגמה: הוסף לקוח סוויט לאילן"
+        if not account_name:
+            return "❌ לא ציינת שם בעל בית. לדוגמה: הוסף לקוח סוויט לאילן"
+        
+        # חפש את בעל הבית (Account) ב-Zoho
+        accounts = zoho_get("Accounts/search", {"word": account_name})
+        if not accounts:
+            return f"❌ לא מצאתי בעל בית בשם '{account_name}'"
+        
+        # אם יש כמה תוצאות - נסה לסנן לפי שם
+        if len(accounts) > 1:
+            filtered = [a for a in accounts if account_name.lower() in a.get("Account_Name", "").lower()]
+            if len(filtered) == 1:
+                accounts = filtered
+        
+        account = accounts[0]
+        acc_id = account["id"]
+        acc_display = account.get("Account_Name", account_name)
+        
+        # בדוק שהלקוח לא קיים כבר
+        existing = zoho_get("Contacts/search", {"word": contact_name})
+        if existing:
+            for c in existing:
+                c_acc = c.get("Account_Name", {})
+                c_acc_id = c_acc.get("id") if isinstance(c_acc, dict) else None
+                if c_acc_id == acc_id:
+                    return f"⚠️ לקוח '{c['Full_Name']}' כבר קיים אצל '{acc_display}'!"
+        
+        # צור את הלקוח
+        new_id = create_zoho_contact(contact_name, acc_id, acc_display)
+        if new_id:
+            return (f"✅ לקוח חדש נוצר!\n"
+                    f"👤 {contact_name}\n"
+                    f"🏠 {acc_display}")
+        return "❌ שגיאה ביצירת הלקוח"
 
     elif action == "query":
         account_name = intent.get("account", "")
