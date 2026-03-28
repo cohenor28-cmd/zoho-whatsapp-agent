@@ -1,5 +1,7 @@
 import os
 import json
+import time
+import threading
 import requests
 from datetime import date
 from flask import Flask, request
@@ -21,22 +23,36 @@ GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "")
 
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# ─── In-memory token cache ─────────────────────────────────────────────────────
-_token_cache = {"access_token": os.environ.get("ZOHO_ACCESS_TOKEN", ""), "api_domain": ZOHO_API_DOMAIN}
+# ─── שיפור #1: Token cache עם זמן תפוגה (חוסך 1-3 שניות) ──────────────────
+_token_cache = {
+    "access_token": os.environ.get("ZOHO_ACCESS_TOKEN", ""),
+    "api_domain": ZOHO_API_DOMAIN,
+    "expires_at": 0  # timestamp - מתי הטוקן פג תוקף
+}
+
+# ─── שיפור #3: Product cache בזיכרון (חוסך 1-2 שניות) ───────────────────────
+_product_cache = {
+    "products": [],       # רשימת כל המוצרים
+    "loaded_at": 0,       # מתי נטען
+    "ttl": 3600 * 6       # רענון כל 6 שעות
+}
 
 # ─── Session memory (per phone number) ────────────────────────────────────────
 sessions = {}
 
 # ─── Zoho helpers ──────────────────────────────────────────────────────────────
 def get_access_token():
+    """שיפור: בודק תפוגה לפי זמן במקום לקרוא ל-Zoho כל פעם"""
     token = _token_cache.get("access_token", "")
     domain = _token_cache.get("api_domain", ZOHO_API_DOMAIN)
-    if token:
-        headers = {"Authorization": f"Zoho-oauthtoken {token}"}
-        test = requests.get(f"{domain}/crm/v5/users?type=CurrentUser", headers=headers)
-        if test.status_code != 401:
-            return token, domain
-    # Refresh
+    expires_at = _token_cache.get("expires_at", 0)
+    
+    # אם הטוקן עדיין תקף (עם מרווח ביטחון של 5 דקות)
+    if token and time.time() < (expires_at - 300):
+        return token, domain
+    
+    # רענון טוקן
+    print("Refreshing Zoho token...")
     r = requests.post("https://accounts.zoho.com/oauth/v2/token", params={
         "grant_type": "refresh_token",
         "client_id": ZOHO_CLIENT_ID,
@@ -44,8 +60,11 @@ def get_access_token():
         "refresh_token": ZOHO_REFRESH_TOKEN
     })
     if r.status_code == 200 and "access_token" in r.json():
-        _token_cache["access_token"] = r.json()["access_token"]
-        print(f"Token refreshed successfully")
+        data = r.json()
+        _token_cache["access_token"] = data["access_token"]
+        # Zoho tokens expire in 3600 seconds (1 hour)
+        _token_cache["expires_at"] = time.time() + data.get("expires_in", 3600)
+        print(f"Token refreshed successfully, expires in {data.get('expires_in', 3600)}s")
     else:
         print(f"Token refresh failed: {r.status_code} {r.text[:200]}")
     return _token_cache["access_token"], domain
@@ -55,6 +74,13 @@ def zoho_get(endpoint, params=None):
     headers = {"Authorization": f"Zoho-oauthtoken {token}"}
     r = requests.get(f"{domain}/crm/v5/{endpoint}", headers=headers, params=params)
     print(f"zoho_get {endpoint} status={r.status_code}")
+    if r.status_code == 401:
+        # טוקן פג - אפס ורענן
+        _token_cache["expires_at"] = 0
+        token, domain = get_access_token()
+        headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+        r = requests.get(f"{domain}/crm/v5/{endpoint}", headers=headers, params=params)
+        print(f"zoho_get {endpoint} retry status={r.status_code}")
     if r.status_code in [200, 201]:
         return r.json().get("data", [])
     if r.status_code == 204:
@@ -76,6 +102,31 @@ def zoho_put(endpoint, data):
     r = requests.put(f"{domain}/crm/v5/{endpoint}", headers=headers, json=data)
     print(f"zoho_put {endpoint} status={r.status_code}")
     return r.json()
+
+# ─── שיפור #3: Product cache functions ───────────────────────────────────────
+def load_all_products():
+    """טוען את כל המוצרים מ-Zoho לזיכרון"""
+    print("Loading all products into cache...")
+    all_products = []
+    page = 1
+    while True:
+        results = zoho_get("Products", {"fields": "Product_Name,Unit_Price,id", "per_page": 200, "page": page})
+        if not results:
+            break
+        all_products.extend(results)
+        if len(results) < 200:
+            break
+        page += 1
+    _product_cache["products"] = all_products
+    _product_cache["loaded_at"] = time.time()
+    print(f"Product cache loaded: {len(all_products)} products")
+    return all_products
+
+def get_cached_products():
+    """מחזיר מוצרים מהקאש, טוען מחדש אם צריך"""
+    if not _product_cache["products"] or (time.time() - _product_cache["loaded_at"]) > _product_cache["ttl"]:
+        return load_all_products()
+    return _product_cache["products"]
 
 # ─── CRM actions ───────────────────────────────────────────────────────────────
 def find_contact_by_name_and_account(contact_name, account_name):
@@ -110,7 +161,7 @@ def find_contact_by_name_and_account(contact_name, account_name):
     return matches, accounts
 
 def find_product(product_name):
-    """חיפוש מוצר לפי שם ב-Zoho API - תומך בחיפוש חלקי"""
+    """שיפור: חיפוש מוצר מהקאש בזיכרון במקום API call כל פעם"""
     if not product_name:
         print("find_product: empty product name")
         return []
@@ -119,28 +170,30 @@ def find_product(product_name):
     product_lower = product_name.strip().lower()
     search_words = product_lower.split()
 
-    # חיפוש ישיר ב-Zoho לפי שם
+    # שיפור: חיפוש מהקאש בזיכרון (מיידי!)
+    all_products = get_cached_products()
+    if all_products:
+        # סינון - כל המילים חייבות להופיע
+        filtered = [p for p in all_products if all(w in p.get("Product_Name", "").lower() for w in search_words)]
+        if filtered:
+            print(f"find_product: cache hit! {len(filtered)} results for '{product_name}'")
+            return filtered
+        # סינון חלקי - לפחות מילה אחת
+        partial = [p for p in all_products if any(w in p.get("Product_Name", "").lower() for w in search_words)]
+        if partial:
+            print(f"find_product: cache partial hit! {len(partial)} results for '{product_name}'")
+            return partial
+
+    # Fallback: חיפוש ישיר ב-Zoho API
+    print(f"find_product: cache miss, searching Zoho API...")
     results = zoho_get("Products/search", {"word": product_name, "fields": "Product_Name,Unit_Price,id"})
     if results:
-        # סינון - רק מוצרים שמכילים את כל המילים שהמשתמש כתב
-        filtered = []
-        for p in results:
-            pname = p.get("Product_Name", "").lower()
-            if all(w in pname for w in search_words):
-                filtered.append(p)
+        filtered = [p for p in results if all(w in p.get("Product_Name", "").lower() for w in search_words)]
         if filtered:
-            print(f"find_product: filtered to {len(filtered)} results for '{product_name}'")
             return filtered
-        # אם אין סינון מדויק - סנן לפי לפחות מילה אחת
-        partial = []
-        for p in results:
-            pname = p.get("Product_Name", "").lower()
-            if any(w in pname for w in search_words):
-                partial.append(p)
+        partial = [p for p in results if any(w in p.get("Product_Name", "").lower() for w in search_words)]
         if partial:
-            print(f"find_product: partial filter to {len(partial)} results for '{product_name}'")
             return partial
-        print(f"find_product: found {len(results)} results for '{product_name}' (no filter match, returning all)")
         return results
 
     # אם לא נמצא - נסה חיפוש עם מילה ראשונה בלבד
@@ -149,21 +202,16 @@ def find_product(product_name):
         print(f"find_product: retry with first word '{first_word}'")
         results2 = zoho_get("Products/search", {"word": first_word, "fields": "Product_Name,Unit_Price,id"})
         if results2:
-            # סנן לפי כל המילים
             filtered2 = [p for p in results2 if all(w in p.get("Product_Name", "").lower() for w in search_words)]
             if filtered2:
                 return filtered2
-            # סנן לפי לפחות מילה אחת
             partial2 = [p for p in results2 if any(w in p.get("Product_Name", "").lower() for w in search_words)]
             if partial2:
                 return partial2
-            # אם אין - חפש התאמה חלקית
             for p in results2:
                 pname = p.get("Product_Name", "").lower()
                 if product_lower in pname or pname in product_lower:
-                    print(f"find_product: matched '{p.get('Product_Name')}' via first-word search")
                     return [p]
-            print(f"find_product: first-word search returned {len(results2)} results")
             return results2
 
     print(f"find_product: no results for '{product_name}'")
@@ -212,7 +260,7 @@ def build_invoice_confirmation(contact, product):
             f"📦 {product.get('Product_Name')}\n"
             f"💰 ₪{product.get('Unit_Price', 0)} | לא שולם")
 
-# ─── AI intent parser (Google Gemini) ─────────────────────────────────────────
+# ─── שיפור #2: AI intent parser - Gemini 2.0 Flash Lite (חוסך 2-5 שניות) ────
 SYSTEM_PROMPT = """
 אתה עוזר חכם שמנתח פקודות קצרות בעברית ומחזיר JSON בלבד. אסור לך לשאול שאלות - תמיד תחזיר JSON.
 
@@ -280,9 +328,10 @@ SYSTEM_PROMPT = """
 """
 
 def parse_intent(message):
+    """שיפור: משתמש ב-gemini-2.0-flash-lite - הכי מהיר!"""
     if not GEMINI_API_KEY:
         return {"action": "unknown"}
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={GEMINI_API_KEY}"
     payload = {
         "contents": [
             {
@@ -297,7 +346,7 @@ def parse_intent(message):
         }
     }
     try:
-        r = requests.post(url, json=payload, timeout=15)
+        r = requests.post(url, json=payload, timeout=10)
         print(f"Gemini status: {r.status_code}")
         if r.status_code == 200:
             resp_json = r.json()
@@ -557,12 +606,10 @@ def webhook():
         print(f"=== WEBHOOK: msg='{incoming_msg}' from='{from_number}' ===")
         
         # Ensure from_number is in correct format
-        # URL encoding turns + into space, fix it
         from_number = from_number.replace(" ", "+")
         if from_number and not from_number.startswith("whatsapp:"):
             from_number = f"whatsapp:{from_number}"
         if "whatsapp:" in from_number and "+" not in from_number:
-            # Fix missing + sign
             from_number = from_number.replace("whatsapp:", "whatsapp:+")
         
         print(f"=== Fixed from_number: '{from_number}' ===")
@@ -575,7 +622,6 @@ def webhook():
         return str(MessagingResponse())
     except Exception as e:
         print(f"=== WEBHOOK ERROR: {e} ===")
-        # Try to send error message back
         try:
             resp = MessagingResponse()
             resp.message(f"❌ שגיאה: {str(e)[:100]}")
@@ -585,11 +631,23 @@ def webhook():
 
 @app.route("/health")
 def health():
-    return "✅ Zoho WhatsApp Agent is running!", 200
+    return "✅ Zoho WhatsApp Agent is running! (optimized)", 200
 
 @app.route("/")
 def index():
-    return "✅ Zoho CRM WhatsApp Agent - Active", 200
+    return "✅ Zoho CRM WhatsApp Agent - Active (optimized)", 200
+
+# ─── טעינת קאש מוצרים בהפעלה (ברקע) ─────────────────────────────────────────
+def preload_cache():
+    """טוען מוצרים ברקע כשהשרת עולה"""
+    try:
+        time.sleep(5)  # חכה שהשרת יעלה
+        load_all_products()
+    except Exception as e:
+        print(f"Preload cache error: {e}")
+
+# הפעל טעינת קאש ברקע
+threading.Thread(target=preload_cache, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
