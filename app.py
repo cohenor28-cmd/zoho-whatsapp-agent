@@ -228,15 +228,14 @@ def find_contact_by_name_and_account(contact_name, account_name):
     return matches, accounts
 
 def best_account_match(accounts, search_name):
-    """בוחר את ההתאמה הטובה ביותר מרשימת Accounts לפי שם חיפוש.
-    עדיפות: 1) התאמה מדויקת על חלק בעל הבית (אחרי ' - ')
-    2) התאמה מדויקת על שם מלא 3) השם הקצר ביותר שמכיל את החיפוש"""
+    """בוחר את ההתאמה הטובה ביותר מרשימת Accounts.
+    מחזיר: account יחיד אם יש התאמה מדויקת, או None אם יש כמה אפשרויות וצריך לבחור."""
     if not accounts:
         return None
     if len(accounts) == 1:
         return accounts[0]
     search_lower = search_name.strip().lower()
-    # עדיפות 1: התאמה מדויקת על חלק בעל הבית
+    # עדיפות 1: התאמה מדויקת על חלק בעל הבית (אחרי ' - ')
     for a in accounts:
         name = a.get("Account_Name", "")
         if " - " in name:
@@ -247,12 +246,30 @@ def best_account_match(accounts, search_name):
     for a in accounts:
         if a.get("Account_Name", "").lower() == search_lower:
             return a
-    # עדיפות 3: הכי קצר שמכיל את החיפוש
+    # עדיפות 3: סינון למי שמכיל את החיפוש
     containing = [a for a in accounts if search_lower in a.get("Account_Name", "").lower()]
-    if containing:
-        containing.sort(key=lambda a: len(a.get("Account_Name", "")))
-        return containing[0]
-    return accounts[0]
+    if len(containing) == 1:
+        return containing[0]  # רק אחד מתאים - בחר אוטומטית
+    if len(containing) > 1:
+        return None  # כמה אפשרויות - צריך להציג רשימה
+    return accounts[0]  # אף אחד לא מכיל - בחר ראשון
+
+def show_account_choice(accounts, search_name, from_number, original_action, extra_context=None):
+    """מציג רשימת בעלי בתים לבחירה ושומר session"""
+    search_lower = search_name.strip().lower()
+    containing = [a for a in accounts if search_lower in a.get("Account_Name", "").lower()]
+    options = containing if containing else accounts
+    context = {"original_action": original_action}
+    if extra_context:
+        context.update(extra_context)
+    sessions[from_number] = {
+        "pending": "account_choice",
+        "options": options[:10],
+        "context": context
+    }
+    lines = [f"{i+1}. {a.get('Account_Name', '')}" for i, a in enumerate(options[:10])]
+    extra = f"\n... ועוד {len(options) - 10}" if len(options) > 10 else ""
+    return f"🏠 מצאתי {len(options)} בעלי בתים עבור '{search_name}':\n" + "\n".join(lines) + extra + "\n\nכתוב מספר לבחירה:"
 
 def find_product(product_name):
     """שיפור: חיפוש מוצר מהקאש בזיכרון במקום API call כל פעם"""
@@ -691,6 +708,115 @@ def handle_command(message, from_number):
         inv_id = create_invoice(chosen["id"], acc_id, product["id"], final_price, chosen["Full_Name"], quantity)
         return build_invoice_confirmation(chosen, product, final_price, quantity) if inv_id else "❌ שגיאה ביצירת החשבונית"
 
+    if pending == "account_choice":
+        options = session["options"]
+        context = session["context"]
+        chosen = None
+        msg_lower = message.strip().lower()
+        # בחירה לפי מספר
+        if msg_lower.isdigit():
+            idx = int(msg_lower) - 1
+            if 0 <= idx < len(options):
+                chosen = options[idx]
+        # בחירה לפי שם
+        if not chosen:
+            for opt in options:
+                if msg_lower in opt.get("Account_Name", "").lower():
+                    chosen = opt
+                    break
+        if not chosen:
+            lines = [f"{i+1}. {a.get('Account_Name', '')}" for i, a in enumerate(options)]
+            return f"לא הצלחתי לזהות. בחר מספר:\n" + "\n".join(lines)
+        sessions.pop(from_number, None)
+        # חזור לפעולה המקורית עם ה-account שנבחר
+        original_action = context.get("original_action")
+        if original_action == "active_lines":
+            acc_id = chosen["id"]
+            acc_display = chosen.get("Account_Name", "")
+            total_lines, active_contacts = get_active_lines_for_account(acc_id, acc_display)
+            if total_lines == 0:
+                return f"📊 {acc_display}\n🔌 0 קווים פעילים"
+            details = "\n".join([f"  • {c['name']} ({c['lines']})" for c in active_contacts[:20]])
+            extra = f"\n  ... ועוד {len(active_contacts) - 20}" if len(active_contacts) > 20 else ""
+            return (f"📊 {acc_display}\n"
+                    f"🔌 {total_lines} קווים פעילים\n"
+                    f"👥 {len(active_contacts)} לקוחות:\n{details}{extra}")
+        elif original_action == "active_lines_invoice":
+            contact_name = context.get("contact_name", "")
+            acc_id = chosen["id"]
+            acc_display = chosen.get("Account_Name", "")
+            total_lines, active_contacts = get_active_lines_for_account(acc_id, acc_display)
+            if total_lines == 0:
+                return f"❌ אין קווים פעילים ל-{acc_display}"
+            products = find_product("כרטיס 050 קו פעיל אידיאל")
+            if not products:
+                return f"❌ לא מצאתי מוצר 'כרטיס 050 - קו פעיל אידיאל'"
+            product = products[0]
+            contacts, _ = find_contact_by_name_and_account(contact_name, chosen.get("Account_Name", ""))
+            if not contacts:
+                return f"❌ לא מצאתי לקוח '{contact_name}' אצל '{acc_display}'"
+            if len(contacts) > 1:
+                sessions[from_number] = {
+                    "pending": "contact_choice",
+                    "options": contacts,
+                    "context": {"product": product, "custom_price": 0, "quantity": total_lines}
+                }
+                names = "\n".join([f"{i+1}. {c['Full_Name']}" for i, c in enumerate(contacts)])
+                return f"🔌 {total_lines} קווים פעילים ל-{acc_display}\n\nמצאתי כמה לקוחות:\n{names}\n\nכתוב חלק מהשם או מספר לבחירה:"
+            contact = contacts[0]
+            c_acc_id = contact.get("Account_Name", {}).get("id") if isinstance(contact.get("Account_Name"), dict) else acc_id
+            final_price = product.get("Unit_Price", 0)
+            inv_id = create_invoice(contact["id"], c_acc_id, product["id"], final_price, contact["Full_Name"], total_lines)
+            if inv_id:
+                acc_name = contact.get("Account_Name", {}).get("name", acc_display) if isinstance(contact.get("Account_Name"), dict) else acc_display
+                return (f"✅ חשבונית קווים פעילים נוצרה!\n"
+                        f"👤 {contact['Full_Name']}\n"
+                        f"🏠 {acc_name}\n"
+                        f"📦 {product.get('Product_Name')} x{total_lines}\n"
+                        f"🔌 {total_lines} קווים פעילים\n"
+                        f"💰 ₪{final_price} ליחידה | סה\"כ ₪{final_price * total_lines}")
+            return "❌ שגיאה ביצירת החשבונית"
+        elif original_action == "create_contact":
+            contact_name = context.get("contact_name", "")
+            acc_id = chosen["id"]
+            acc_display = chosen.get("Account_Name", "")
+            existing = zoho_get("Contacts/search", {"word": contact_name})
+            if existing:
+                for c in existing:
+                    c_acc = c.get("Account_Name", {})
+                    c_acc_id = c_acc.get("id") if isinstance(c_acc, dict) else None
+                    if c_acc_id == acc_id:
+                        return f"⚠️ לקוח '{c['Full_Name']}' כבר קיים אצל '{acc_display}'!"
+            new_id = create_zoho_contact(contact_name, acc_id, acc_display)
+            if new_id:
+                moshav = get_moshav_for_account(acc_display)
+                moshav_line = f"\n📍 {moshav}" if moshav else ""
+                return (f"✅ לקוח חדש נוצר!\n"
+                        f"👤 {contact_name}\n"
+                        f"🏠 {acc_display}"
+                        f"{moshav_line}\n"
+                        f"📱 0")
+            return "❌ שגיאה ביצירת הלקוח"
+        elif original_action == "create_invoice":
+            context_data = context
+            product = context_data.get("product")
+            contact_name = context_data.get("contact_name", "")
+            custom_price = context_data.get("custom_price", 0)
+            quantity = context_data.get("quantity", 1)
+            final_price = custom_price if custom_price and custom_price > 0 else product.get("Unit_Price", 0)
+            contacts, _ = find_contact_by_name_and_account(contact_name, chosen.get("Account_Name", ""))
+            if not contacts:
+                return f"❌ לא מצאתי לקוח '{contact_name}' אצל '{chosen.get('Account_Name', '')}'"
+            if len(contacts) > 1:
+                sessions[from_number] = {"pending": "contact_choice", "options": contacts, "context": {"product": product, "custom_price": custom_price, "quantity": quantity}}
+                names = "\n".join([f"{i+1}. {c['Full_Name']}" for i, c in enumerate(contacts)])
+                return f"מצאתי כמה לקוחות:\n{names}\n\nכתוב חלק מהשם או מספר לבחירה:"
+            contact = contacts[0]
+            acc_id = contact.get("Account_Name", {}).get("id") if isinstance(contact.get("Account_Name"), dict) else chosen["id"]
+            inv_id = create_invoice(contact["id"], acc_id, product["id"], final_price, contact["Full_Name"], quantity)
+            return build_invoice_confirmation(contact, product, final_price, quantity) if inv_id else "❌ שגיאה ביצירת החשבונית"
+        return "❌ שגיאה פנימית"
+
     if pending == "payment_contact_choice":
         options = session["options"]
         context = session["context"]
@@ -849,6 +975,8 @@ def handle_command(message, from_number):
             return f"❌ לא מצאתי בעל בית בשם '{account_name}'"
         
         account = best_account_match(accounts, account_name)
+        if not account:
+            return show_account_choice(accounts, account_name, from_number, "create_contact", {"contact_name": contact_name})
         acc_id = account["id"]
         acc_display = account.get("Account_Name", account_name)
         
@@ -881,6 +1009,8 @@ def handle_command(message, from_number):
         if not accounts:
             return f"❌ לא מצאתי בעל בית בשם '{account_name}'"
         account = best_account_match(accounts, account_name)
+        if not account:
+            return show_account_choice(accounts, account_name, from_number, "active_lines")
         acc_id = account["id"]
         acc_display = account.get("Account_Name", account_name)
         total_lines, active_contacts = get_active_lines_for_account(acc_id, acc_display)
@@ -902,6 +1032,8 @@ def handle_command(message, from_number):
         if not accounts:
             return f"❌ לא מצאתי בעל בית בשם '{account_name}'"
         account = best_account_match(accounts, account_name)
+        if not account:
+            return show_account_choice(accounts, account_name, from_number, "active_lines_invoice", {"contact_name": contact_name})
         acc_id = account["id"]
         acc_display = account.get("Account_Name", account_name)
         # ספור קווים פעילים של בעל הבית
