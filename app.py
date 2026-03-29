@@ -1155,14 +1155,26 @@ def webhook():
         quote = f"📩 \"{incoming_msg}\"\n─────────────\n"
         full_reply = quote + reply
         
-        # Twilio WhatsApp מגביל ל-1600 תווים
-        if len(full_reply) > 1600:
-            full_reply = full_reply[:1597] + "..."
-        
-        print(f"=== Reply: '{full_reply[:100]}' ===")
-        
-        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=full_reply)
-        print(f"=== Message sent successfully ===")
+        # Twilio WhatsApp מגביל ל-1600 תווים - שלח ב-2 חלקים אם ארוך מדי
+        MAX_LEN = 1550  # מרווח ביטחון מ-1600
+        if len(full_reply) > MAX_LEN:
+            # מצא נקודת חיתוך טובה (סוף שורה) בסביבות האמצע
+            mid = len(full_reply) // 2
+            # חפש \n קרוב לאמצע (עד 200 תווים לפנים)
+            cut = full_reply.rfind('\n', mid - 200, mid + 200)
+            if cut == -1:
+                cut = mid  # אם אין \n - חתוך באמצע
+            part1 = full_reply[:cut].strip()
+            part2 = full_reply[cut:].strip()
+            print(f"=== Reply SPLIT: part1={len(part1)} chars, part2={len(part2)} chars ===")
+            twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part1)
+            import time as _time; _time.sleep(0.5)  # המתן קצת בין ההודעות
+            twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part2)
+            print(f"=== 2 messages sent successfully ===")
+        else:
+            print(f"=== Reply: '{full_reply[:100]}' ===")
+            twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=full_reply)
+            print(f"=== Message sent successfully ===")
         return str(MessagingResponse())
     except Exception as e:
         print(f"=== WEBHOOK ERROR: {e} ===")
