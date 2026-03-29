@@ -647,10 +647,57 @@ def _process_payment_for_contact(contact, amount, method, from_number):
     return f"מצאתי {len(open_invoices)} חשבוניות פתוחות:\n{lines}\n\nאיזו לסמן כשולם?"
 
 # ─── Main handler ──────────────────────────────────────────────────────────────
+def _looks_like_new_command(message):
+    """בדוק אם ההודעה נראית כמו פקודה חדשה ולא תשובה לשאלה קודמת."""
+    msg = message.strip()
+    # אם זה רק מספר (1-30) - זו תשובה לבחירה
+    if msg.isdigit() and 1 <= int(msg) <= 30:
+        return False
+    # אם זה מילה אחת קצרה (עד 10 תווים) - כנראה תשובה (שם)
+    if len(msg) <= 10 and " " not in msg:
+        return False
+    # אם זה "כן" או "לא" - תשובה
+    if msg in ["כן", "לא", "yes", "no"]:
+        return False
+    # אם מכיל מילות מפתח של פקודות - זו פקודה חדשה
+    command_keywords = ["חשבונית", "הוסף לקוח", "לקוח חדש", "פתח לקוח", "צור לקוח",
+                        "קווים פעילים", "שילם", "שולם", "תשלום", "חשבוניות פתוחות",
+                        "כרטיס 050", "מקל סלפי", "בלוטוס", "אוזניות", "רמקול", "סוללה"]
+    msg_lower = msg.lower()
+    for kw in command_keywords:
+        if kw in msg_lower:
+            return True
+    # אם יש יותר מ-3 מילים - כנראה פקודה חדשה
+    if len(msg.split()) > 3:
+        return True
+    return False
+
 def handle_command(message, from_number):
     print(f"handle_command: '{message}' from {from_number}")
     session = sessions.get(from_number, {})
     pending = session.get("pending")
+
+    # === זיהוי פקודה חדשה כשיש session פתוח ===
+    if pending and _looks_like_new_command(message):
+        # שמור את הפקודה החדשה ושאל אם לעבור
+        sessions[from_number] = {"pending": "confirm_switch", "new_message": message, "old_session": session}
+        return "🔄 יש לך פעולה קודמת שלא הסתיימה.\nלעבור לפקודה החדשה?\n\n1. כן, עבור לפקודה החדשה\n2. לא, חזור לפעולה הקודמת"
+
+    if pending == "confirm_switch":
+        msg = message.strip()
+        if msg in ["1", "כן", "yes"]:
+            # עבור לפקודה החדשה
+            new_message = session.get("new_message", "")
+            sessions.pop(from_number, None)
+            return handle_command(new_message, from_number)
+        elif msg in ["2", "לא", "no"]:
+            # חזור לפעולה הקודמת
+            old_session = session.get("old_session", {})
+            sessions[from_number] = old_session
+            pending_type = old_session.get("pending", "")
+            return f"👌 חוזר לפעולה הקודמת. אנא ענה על השאלה:"
+        else:
+            return "כתוב 1 (כן) או 2 (לא)"
 
     if pending == "product_choice":
         options = session["options"]
