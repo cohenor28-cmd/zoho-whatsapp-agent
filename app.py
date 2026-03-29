@@ -748,9 +748,9 @@ def handle_command(message, from_number):
             total_lines, active_contacts = get_active_lines_for_account(acc_id, acc_display)
             if total_lines == 0:
                 return f"❌ אין קווים פעילים ל-{acc_display}"
-            products = find_product("כרטיס 050 קו פעיל אידיאל")
+            products = find_product("כרטיס 050 מקומי קו פעיל")
             if not products:
-                return f"❌ לא מצאתי מוצר 'כרטיס 050 - קו פעיל אידיאל'"
+                return f"❌ לא מצאתי מוצר 'כרטיס 050 מקומי- קו פעיל'"
             product = products[0]
             contacts, _ = find_contact_by_name_and_account(contact_name, chosen.get("Account_Name", ""))
             if not contacts:
@@ -1040,10 +1040,10 @@ def handle_command(message, from_number):
         total_lines, active_contacts = get_active_lines_for_account(acc_id, acc_display)
         if total_lines == 0:
             return f"❌ אין קווים פעילים ל-{acc_display}"
-        # מצא את המוצר "כרטיס 050 - קו פעיל אידיאל"
-        products = find_product("כרטיס 050 קו פעיל אידיאל")
+        # מצא את המוצר "כרטיס 050 מקומי- קו פעיל"
+        products = find_product("כרטיס 050 מקומי קו פעיל")
         if not products:
-            return f"❌ לא מצאתי מוצר 'כרטיס 050 - קו פעיל אידיאל'"
+            return f"❌ לא מצאתי מוצר 'כרטיס 050 מקומי- קו פעיל'"
         product = products[0]
         # מצא את הלקוח
         contacts, _ = find_contact_by_name_and_account(contact_name, account_name)
