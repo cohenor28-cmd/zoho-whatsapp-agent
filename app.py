@@ -1185,6 +1185,80 @@ def webhook():
         except:
             return str(MessagingResponse()), 200
 
+@app.route("/api/create_invoice_and_pay", methods=["POST"])
+def create_invoice_and_pay_api():
+    """
+    Endpoint שנקרא מהתוכנה (checkbox) כשמסמנים לקוח כשולם.
+    מקבל: { contact_name, payment_method }
+    מבצע: מוצא לקוח ב-Zoho → יוצר חשבונית → מסמן כשולם → שולח WhatsApp
+    """
+    try:
+        data = request.get_json(force=True)
+        contact_name = (data.get("contact_name") or "").strip()
+        payment_method = (data.get("payment_method") or "מזומן").strip()
+
+        if not contact_name:
+            return {"success": False, "error": "contact_name is required"}, 400
+
+        print(f"=== create_invoice_and_pay: contact='{contact_name}' method='{payment_method}' ===")
+
+        # 1. מצא את המוצר 'כרטיס 050 מקומי- קו פעיל'
+        products = find_product("כרטיס 050 מקומי קו פעיל")
+        if not products:
+            return {"success": False, "error": "Product 'כרטיס 050 מקומי- קו פעיל' not found"}, 404
+        product = products[0]
+
+        # 2. מצא את הלקוח ב-Zoho לפי שם
+        contacts_raw = zoho_get("Contacts/search", {"word": contact_name,
+                                                    "fields": "id,Full_Name,Account_Name"})
+        if not contacts_raw:
+            return {"success": False, "error": f"Contact '{contact_name}' not found in Zoho"}, 404
+
+        # בחר את הלקוח הכי מתאים (התאמה מדויקת עדיפה)
+        contact = next((c for c in contacts_raw if c.get("Full_Name", "").strip() == contact_name), contacts_raw[0])
+        contact_id = contact["id"]
+        acc_obj = contact.get("Account_Name", {})
+        account_id = acc_obj.get("id") if isinstance(acc_obj, dict) else None
+
+        if not account_id:
+            return {"success": False, "error": f"No account (landlord) linked to contact '{contact_name}'"}, 400
+
+        # 3. צור חשבונית
+        price = product.get("Unit_Price", 0)
+        inv_id = create_invoice(contact_id, account_id, product["id"], price, contact["Full_Name"], 1)
+        if not inv_id:
+            return {"success": False, "error": "Failed to create invoice in Zoho"}, 500
+
+        # 4. סמן חשבונית כשולם
+        mark_invoice_paid(inv_id, price, payment_method)
+
+        # 5. שלח הודעת WhatsApp לאישור
+        acc_name = acc_obj.get("name", "") if isinstance(acc_obj, dict) else ""
+        msg = (f"✅ חשבונית נוצרה ושולמה!\n"
+               f"👤 {contact['Full_Name']}\n"
+               f"🏠 {acc_name}\n"
+               f"📦 {product.get('Product_Name')}\n"
+               f"💰 ₪{price} - {payment_method}")
+
+        owner_number = os.environ.get("OWNER_WHATSAPP", "")
+        if owner_number:
+            try:
+                twilio_client.messages.create(
+                    from_=TWILIO_WHATSAPP_FROM,
+                    to=f"whatsapp:{owner_number}",
+                    body=msg
+                )
+            except Exception as e:
+                print(f"WhatsApp notify error: {e}")
+
+        print(f"=== create_invoice_and_pay SUCCESS: inv_id={inv_id} ===")
+        return {"success": True, "invoice_id": inv_id, "contact": contact['Full_Name']}, 200
+
+    except Exception as e:
+        print(f"=== create_invoice_and_pay ERROR: {e} ===")
+        return {"success": False, "error": str(e)}, 500
+
+
 @app.route("/health")
 def health():
     return "✅ Zoho WhatsApp Agent is running! (optimized)", 200
