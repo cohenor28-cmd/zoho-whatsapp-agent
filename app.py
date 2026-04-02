@@ -4,11 +4,13 @@ import time
 import threading
 import requests
 from datetime import date, datetime, timedelta
-from flask import Flask, request
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 
 app = Flask(__name__)
+CORS(app)  # אפשר בקשות מכל דומיין
 
 # ─── Config from environment variables ────────────────────────────────────────
 TWILIO_ACCOUNT_SID   = os.environ["TWILIO_ACCOUNT_SID"]
@@ -41,6 +43,126 @@ _product_cache = {
 
 # ─── Session memory (per phone number) ────────────────────────────────────────
 sessions = {}
+
+# ──# ─── יומן פעולות יומי (קובץ קבוע) ──────────────────────────────────
+LOG_DIR = "/tmp/bot_logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+
+def _log_file_path(day: str = None) -> str:
+    d = day or date.today().isoformat()
+    return os.path.join(LOG_DIR, f"daily_{d}.json")
+
+def log_action(action_type: str, description: str):
+    today = date.today().isoformat()
+    now_str = datetime.now().strftime("%H:%M")
+    entry = {"time": now_str, "type": action_type, "desc": description}
+    path = _log_file_path(today)
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                entries = json.load(f)
+        else:
+            entries = []
+        entries.append(entry)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(entries, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[LOG ERROR] {e}")
+    print(f"[LOG] {now_str} [{action_type}] {description}")
+
+def _load_daily_log(day: str = None) -> list:
+    path = _log_file_path(day)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return []
+
+def build_daily_report() -> str:
+    today = datetime.now().strftime("%d/%m/%Y")
+    day_heb = ["ראשון","שני","שלישי","רביעי","חמישי","שישי","שבת"][datetime.now().weekday() % 7]
+    log_entries = _load_daily_log()
+    counts = {}
+    for entry in log_entries:
+        t = entry["type"]
+        counts[t] = counts.get(t, 0) + 1
+    total = len(log_entries)
+    emoji_map = {"חשבונית":"🧾","תשלום":"💰","לקוח חדש":"👤","מחיקה":"🗑️","קווים פעילים":"📡","אחר":"⚙️"}
+    lines = [
+        f"📊 *סיכום יומי - {today} (יום {day_heb})*",
+        f"{'─'*28}",
+    ]
+    if total == 0:
+        lines.append("😴 לא בוצעו פעולות היום")
+    else:
+        for action_type, count in sorted(counts.items(), key=lambda x: -x[1]):
+            em = emoji_map.get(action_type, "▫️")
+            lines.append(f"{em} *{action_type}*: {count} פעולות")
+        lines.append(f"{'─'*28}")
+        lines.append(f"📋 *פירוט ({total} פעולות):*")
+        for entry in log_entries:
+            lines.append(f"  🕐 {entry['time']} | {entry['desc']}")
+    lines.append(f"{'─'*28}")
+    lines.append("🤖 _הבוט שלך - עד מחר!_")
+    return "\n".join(lines)
+
+def split_message(text: str, max_len: int = 1550) -> list:
+    """פצל הודעה לחלקים לפי גבול תווים, חיתוך בשורות"""
+    if len(text) <= max_len:
+        return [text]
+    parts = []
+    while text:
+        if len(text) <= max_len:
+            parts.append(text.strip())
+            break
+        # חפש \n קרוב לגבול
+        cut = text.rfind('\n', 0, max_len)
+        if cut == -1:
+            cut = max_len
+        parts.append(text[:cut].strip())
+        text = text[cut:].strip()
+    return parts
+
+def send_whatsapp_to_owner(message: str):
+    """שולח הודעה לבעלים, מפצל אוטומטית אם ארוך"""
+    owner_number = os.environ.get("OWNER_WHATSAPP", "")
+    if not owner_number:
+        print("[WA] OWNER_WHATSAPP not set")
+        return
+    parts = split_message(message)
+    for i, part in enumerate(parts):
+        try:
+            twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=f"whatsapp:{owner_number}", body=part)
+            if i < len(parts) - 1:
+                time.sleep(0.5)
+        except Exception as e:
+            print(f"[WA] Error sending part {i+1}: {e}")
+
+def send_daily_report():
+    owner_number = os.environ.get("OWNER_WHATSAPP", "")
+    if not owner_number:
+        print("[DAILY REPORT] OWNER_WHATSAPP not set, skipping")
+        return
+    report = build_daily_report()
+    send_whatsapp_to_owner(report)
+    print(f"[DAILY REPORT] Sent to {owner_number}")
+
+def _daily_report_scheduler():
+    while True:
+        try:
+            now = datetime.now()
+            target = now.replace(hour=23, minute=30, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+            wait_seconds = (target - now).total_seconds()
+            print(f"[DAILY REPORT] Next report in {wait_seconds/3600:.1f}h (at 23:30)")
+            time.sleep(wait_seconds)
+            send_daily_report()
+        except Exception as e:
+            print(f"[DAILY REPORT SCHEDULER] Error: {e}")
+            time.sleep(60)
 
 # ─── Zoho helpers ──────────────────────────────────────────────────────────────
 def get_access_token():
@@ -118,6 +240,19 @@ def zoho_put(endpoint, data):
     r = requests.put(f"{domain}/crm/v5/{endpoint}", headers=headers, json=data)
     print(f"zoho_put {endpoint} status={r.status_code}")
     return r.json()
+
+def zoho_delete(endpoint):
+    """מוחק רשומה ב-Zoho CRM"""
+    token, domain = get_access_token()
+    headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+    r = requests.delete(f"{domain}/crm/v5/{endpoint}", headers=headers)
+    print(f"zoho_delete {endpoint} status={r.status_code}")
+    if r.status_code in [200, 201]:
+        return r.json()
+    if r.status_code == 204:
+        return {"data": [{"code": "SUCCESS"}]}
+    print(f"zoho_delete error: {r.text[:200]}")
+    return {}
 
 # ─── שיפור #3: Product cache functions + סנכרון אינקרמנטלי ─────────────────
 def load_all_products():
@@ -335,12 +470,33 @@ def find_open_invoices_for_contact(contact_name):
 
 def mark_invoice_paid(invoice_id, amount, method):
     method_label = method if method else "מזומן"
-    note = f"שולם ₪{amount} ב{method_label}"
+    # Map method label to Zoho picklist actual_value
+    method_map = {
+        "מזומן": "Option 1",
+        "העברה ציאפ": "העברה - ציאפ בנקוק",
+        "ציאפ": "העברה - ציאפ בנקוק",
+        "העברה": "העברה בנקאית",
+        "העברה בנקאית": "העברה בנקאית",
+        "אשראי": "Option 2",
+        "כרטיס אשראי": "Option 2",
+        "המחאה": "המחאה (צ'ק)",
+        "צ'ק": "המחאה (צ'ק)",
+        "גיהוץ": "גיהוץ 019",
+        "gmt": "Gmt",
+        "מקס": "מקס - אשראי צליה",
+        "דני": "העברה - דני בנקוק",
+    }
+    payment_kind_value = method_map.get(method_label, method_map.get(method_label.split()[0] if method_label else "מזומן", "Option 1"))
+    now_str = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
     result = zoho_put(f"Invoices/{invoice_id}", {"data": [{
         "id": invoice_id,
-        "Status": "שולם",
-        "Description": note
+        "payment_amount": float(amount) if amount else 0,
+        "payment_kind": payment_kind_value,
+        "payment_time": now_str,
+        "payment_desc": f"שולם ₪{amount} ב{method_label}",
+        "add_payment": True
     }]})
+    print(f"mark_invoice_paid result: {json.dumps(result, ensure_ascii=False)[:300]}")
     return result.get("data", [{}])[0].get("code") == "SUCCESS"
 
 def create_invoice(contact_id, account_id, product_id, price, contact_name, quantity=1):
@@ -455,6 +611,7 @@ def build_invoice_confirmation(contact, product, final_price=None, quantity=1):
     qty_text = f" x{quantity}" if quantity > 1 else ""
     total = price * quantity if quantity > 1 else price
     total_line = f"\n📊 סה\"כ: ₪{total}" if quantity > 1 else ""
+    log_action("חשבונית", f"נוצרה: {contact['Full_Name']} @ {acc_name} | {product.get('Product_Name')} ₪{price}")
     return (f"✅ חשבונית נוצרה!\n"
             f"👤 {contact['Full_Name']}\n"
             f"🏠 {acc_name}\n"
@@ -662,7 +819,8 @@ def _looks_like_new_command(message):
     # אם מכיל מילות מפתח של פקודות - זו פקודה חדשה
     command_keywords = ["חשבונית", "הוסף לקוח", "לקוח חדש", "פתח לקוח", "צור לקוח",
                         "קווים פעילים", "שילם", "שולם", "תשלום", "חשבוניות פתוחות",
-                        "כרטיס 050", "מקל סלפי", "בלוטוס", "אוזניות", "רמקול", "סוללה"]
+                        "כרטיס 050", "מקל סלפי", "בלוטוס", "אוזניות", "רמקול", "סוללה",
+                        "מחק חשבונית"]
     msg_lower = msg.lower()
     for kw in command_keywords:
         if kw in msg_lower:
@@ -672,10 +830,1009 @@ def _looks_like_new_command(message):
         return True
     return False
 
+def get_last_invoice():
+    """מחזיר את החשבונית האחרונה שנוצרה (לפי Created_Time)"""
+    invoices = zoho_get("Invoices", {
+        "fields": "Subject,Status,Grand_Total,Contact_Name,Account_Name,Created_Time,Invoiced_Items",
+        "sort_by": "Created_Time",
+        "sort_order": "desc",
+        "per_page": 1
+    })
+    if invoices:
+        return invoices[0]
+    return None
+
+def get_payment_records_for_invoice(invoice_id):
+    """מחזיר את כל רשומות בקרת התשלום (CustomModule1) שקשורות לחשבונית"""
+    results = zoho_get("CustomModule1/search", {
+        "criteria": f"(Invoice:equals:{invoice_id})",
+        "fields": "Name,payment_amount,payment_kind,Invoice,Contact",
+        "per_page": 50
+    })
+    print(f"Payment records for invoice {invoice_id}: {len(results)} found")
+    return results
+
+def delete_invoice_with_payment(invoice_id):
+    """מוחק רשומות בקרת תשלום (CustomModule1) ואז את החשבונית עצמה"""
+    # שלב 1: מצא ומחק את רשומות בקרת התשלום
+    payment_records = get_payment_records_for_invoice(invoice_id)
+    for pr in payment_records:
+        pr_id = pr["id"]
+        del_result = zoho_delete(f"CustomModule1/{pr_id}")
+        print(f"Deleted payment record {pr_id}: {json.dumps(del_result, ensure_ascii=False)[:100]}")
+    # שלב 2: מחק את החשבונית עצמה
+    delete_result = zoho_delete(f"Invoices/{invoice_id}")
+    print(f"Delete invoice result: {json.dumps(delete_result, ensure_ascii=False)[:200]}")
+    # assume success (Zoho sometimes returns 200 with empty body)
+    return True
+
+def _zoho_today_range():
+    """מחזיר טווח תאריכים להיום בפורמט Zoho עם אופסט ישראל"""
+    today_start = datetime.now().strftime("%Y-%m-%dT00:00:00+03:00")
+    today_end   = datetime.now().strftime("%Y-%m-%dT23:59:59+03:00")
+    return today_start, today_end
+
+def _fetch_sales_today() -> list:
+    """שלוף כל חשבוניות היום עם פרטי לקוח, בעל בית, מוצרים"""
+    today_start, today_end = _zoho_today_range()
+    invoices = zoho_get("Invoices/search", {
+        "criteria": f"(Created_Time:between:{today_start},{today_end})",
+        "fields": "Subject,Grand_Total,Contact_Name,Account_Name,Created_Time",
+        "per_page": 200
+    })
+    result = []
+    for inv in invoices:
+        try:
+            full_data = zoho_get(f"Invoices/{inv['id']}")
+            full = full_data[0] if full_data else inv
+        except:
+            full = inv
+        contact = full.get("Contact_Name", {})
+        cname = contact.get("name", "") if isinstance(contact, dict) else str(contact)
+        account = full.get("Account_Name", {})
+        aname = account.get("name", "") if isinstance(account, dict) else str(account)
+        total = full.get("Grand_Total", 0) or 0
+        items = full.get("Invoiced_Items", []) or []
+        products = []
+        for item in items:
+            pn = item.get("Product_Name", {})
+            pname = pn.get("name", "") if isinstance(pn, dict) else str(pn)
+            qty = item.get("Quantity", 1) or 1
+            unit_price = item.get("Unit_Price", 0) or 0
+            products.append({"name": pname, "qty": qty, "price": unit_price})
+        result.append({"contact": cname, "landlord": aname, "total": total, "products": products})
+    return result
+
+def _sales_nav_footer(current: str) -> str:
+    """שורת ניווט בתחתית דוח מכירות"""
+    opts = []
+    if current != "contact":  opts.append("1️⃣ לפי לקוח")
+    if current != "landlord": opts.append("2️⃣ לפי בעל בית")
+    if current != "product":  opts.append("3️⃣ לפי מוצר")
+    return "🔄 עבור ל: " + " | ".join(opts)
+
+def build_sales_report() -> str:
+    """דוח מכירות - סיכום + תפריט נוסף"""
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    SEP = "──────────────"
+    try:
+        invoices = _fetch_sales_today()
+    except Exception as e:
+        return f"❌ שגיאה בשליפת דוח מכירות: {e}"
+    if not invoices:
+        return f"🧾 *דוח מכירות - {today_str}*\n{SEP}\n😴 לא נוצרו חשבוניות היום"
+    grand = sum(i["total"] for i in invoices)
+    lines = [
+        f"🧾 *דוח מכירות - {today_str}*",
+        SEP,
+        f"📊 סהכ: *₪{grand}* | {len(invoices)} חשבוניות",
+        SEP,
+        "🔍 *פירוט:*",
+        "1️⃣ לפי לקוח",
+        "2️⃣ לפי בעל בית",
+        "3️⃣ לפי מוצר",
+    ]
+    return "\n".join(lines)
+
+def build_sales_report_with_cache(invoices: list) -> str:
+    """דוח מכירות סיכום עם נתונים שכבר נשלפו (לא שלוף שניית)"""
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    SEP = "──────────────"
+    if not invoices:
+        return f"🧾 *דוח מכירות - {today_str}*\n{SEP}\n😴 לא נוצרו חשבוניות היום"
+    grand = sum(i["total"] for i in invoices)
+    lines = [
+        f"🧾 *דוח מכירות - {today_str}*",
+        SEP,
+        f"📊 סהכ: *₪{grand}* | {len(invoices)} חשבוניות",
+        SEP,
+        "🔍 *פירוט:*",
+        "1️⃣ לפי לקוח",
+        "2️⃣ לפי בעל בית",
+        "3️⃣ לפי מוצר",
+    ]
+    return "\n".join(lines)
+
+def build_sales_by_contact(invoices: list) -> str:
+    SEP = "──────────────"
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    by_c = {}
+    for inv in invoices:
+        c = inv["contact"] or "לא ידוע"
+        by_c.setdefault(c, {"total": 0, "landlord": inv["landlord"], "products": []})
+        by_c[c]["total"] += inv["total"]
+        for p in inv["products"]:
+            pname = p["name"]
+            if pname and pname not in by_c[c]["products"]:
+                by_c[c]["products"].append(pname)
+    # מיין מהגבוה לנמוך
+    sorted_contacts = sorted(by_c.items(), key=lambda x: x[1]["total"], reverse=True)
+    lines = [f"🧾 *מכירות לפי לקוח - {today_str}*", SEP]
+    grand = 0
+    for cname, data in sorted_contacts:
+        grand += data["total"]
+        prod_str = ", ".join(data["products"]) if data["products"] else "לא צוין"
+        lines.append(f"👤 *{cname}* - ₪{data['total']}")
+        lines.append(f"   🏠 {data['landlord']}")
+        lines.append(f"   📦 {prod_str}")
+        lines.append("")
+    lines.append(SEP)
+    lines.append(f"📊 סהכ: *₪{grand}*")
+    lines.append("")
+    lines.append(_sales_nav_footer("contact"))
+    return "\n".join(lines)
+
+def build_sales_by_landlord(invoices: list) -> str:
+    SEP = "──────────────"
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    by_a = {}
+    for inv in invoices:
+        a = inv["landlord"] or "לא ידוע"
+        by_a.setdefault(a, {"total": 0, "items": []})
+        by_a[a]["total"] += inv["total"]
+        prods = ", ".join(p["name"] + (f" x{p['qty']}" if p["qty"] > 1 else "") for p in inv["products"]) or "לא צוין"
+        by_a[a]["items"].append({"contact": inv["contact"], "total": inv["total"], "products": prods})
+    # מיין מהגבוה לנמוך
+    sorted_landlords = sorted(by_a.items(), key=lambda x: x[1]["total"], reverse=True)
+    lines = [f"🏠 *מכירות לפי בעל בית - {today_str}*", SEP]
+    grand = 0
+    for aname, data in sorted_landlords:
+        grand += data["total"]
+        lines.append(f"🏠 *{aname}*")
+        for item in sorted(data["items"], key=lambda x: x["total"], reverse=True):
+            lines.append(f"   👤 {item['contact']} | 📦 {item['products']} | ₪{item['total']}")
+        lines.append(f"   📊 סיכום: ₪{data['total']}")
+        lines.append("")
+    lines.append(SEP)
+    lines.append(f"📊 סהכ: *₪{grand}*")
+    lines.append("")
+    lines.append(_sales_nav_footer("landlord"))
+    return "\n".join(lines)
+
+def build_sales_by_product(invoices: list) -> str:
+    SEP = "──────────────"
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    by_p = {}
+    for inv in invoices:
+        for p in inv["products"]:
+            pname = p["name"] or "לא צוין"
+            by_p.setdefault(pname, {"qty": 0, "total": 0, "contacts": []})
+            by_p[pname]["qty"] += p["qty"]
+            by_p[pname]["total"] += inv["total"]
+            by_p[pname]["contacts"].append(inv["contact"])
+    # מיין: סכום גבוה לנמוך, אם שווה - כמות גבוה לנמוך
+    sorted_products = sorted(by_p.items(), key=lambda x: (x[1]["total"], x[1]["qty"]), reverse=True)
+    lines = [f"📦 *מכירות לפי מוצר - {today_str}*", SEP]
+    grand = 0
+    for pname, data in sorted_products:
+        grand += data["total"]
+        lines.append(f"📦 *{pname}* - {data['qty']} יחידות | ₪{data['total']}")
+        lines.append(f"   👤 {', '.join(data['contacts'])}")
+        lines.append("")
+    lines.append(SEP)
+    lines.append(f"📊 סהכ כל מכירות: *₪{grand}*")
+    lines.append("")
+    lines.append(_sales_nav_footer("product"))
+    return "\n".join(lines)
+
+def _fetch_deposits_today() -> list:
+    """שלוף כל בקרות התשלום של היום עם פרטי החשבונית (לקוח + בעל בית)"""
+    today_start, today_end = _zoho_today_range()
+    records = zoho_get("CustomModule1/search", {
+        "criteria": f"(Created_Time:between:{today_start},{today_end})",
+        "fields": "Name,payment_amount,payment_kind,Invoice,Contact",
+        "per_page": 200
+    })
+    enriched = []
+    for rec in records:
+        amt = rec.get("payment_amount", 0) or 0
+        if amt == 0:
+            continue
+        kind = (rec.get("payment_kind") or "לא ידוע").strip()
+        contact_obj = rec.get("Contact", {})
+        cname = contact_obj.get("name", "") if isinstance(contact_obj, dict) else str(contact_obj)
+        # שלוף חשבונית לקבלת בעל בית
+        aname = ""
+        inv_obj = rec.get("Invoice", {})
+        if isinstance(inv_obj, dict) and inv_obj.get("id"):
+            try:
+                inv_data = zoho_get(f"Invoices/{inv_obj['id']}")
+                if inv_data:
+                    acc = inv_data[0].get("Account_Name", {})
+                    aname = acc.get("name", "") if isinstance(acc, dict) else str(acc)
+            except:
+                pass
+        enriched.append({"kind": kind, "amount": amt, "contact": cname, "landlord": aname})
+    return enriched
+
+def build_deposits_report() -> str:
+    """דוח הפקדות - סיכום לפי שיטת תשלום + תפריט לפי לקוח/בעל בית"""
+    SEP = "──────────────"
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    try:
+        records = _fetch_deposits_today()
+    except Exception as e:
+        return f"❌ שגיאה בשליפת דוח הפקדות: {e}"
+
+    if not records:
+        return f"💳 *דוח הפקדות - {today_str}*\n{SEP}\n😴 לא נרשמו הפקדות היום"
+
+    # סיכום לפי שיטת תשלום
+    by_kind = {}
+    for rec in records:
+        k = rec["kind"]
+        by_kind.setdefault(k, 0)
+        by_kind[k] += rec["amount"]
+
+    grand_total = sum(by_kind.values())
+    lines = [
+        f"💳 *דוח הפקדות - {today_str}*",
+        SEP,
+        f"📊 *סיכום לפי שיטת תשלום:*",
+    ]
+    for kind, total in sorted(by_kind.items()):
+        lines.append(f"   📌 {kind}: ₪{total}")
+    lines.append(f"   → סהכ: *₪{grand_total}*")
+    lines.append(SEP)
+    lines.append("🔍 *פירוט נוסף:*")
+    lines.append("1️⃣ לפי לקוח")
+    lines.append("2️⃣ לפי בעל בית")
+    return "\n".join(lines)
+
+def build_deposits_report_with_cache(records: list) -> str:
+    """דוח הפקדות מסיכום עם נתונים שכבר נשלפו (לא שלוף שניית)"""
+    SEP = "──────────────"
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    if not records:
+        return f"💳 *דוח הפקדות - {today_str}*\n{SEP}\n😴 לא נרשמו הפקדות היום"
+    by_kind = {}
+    for rec in records:
+        k = rec["kind"]
+        by_kind.setdefault(k, 0)
+        by_kind[k] += rec["amount"]
+    grand_total = sum(by_kind.values())
+    lines = [
+        f"💳 *דוח הפקדות - {today_str}*",
+        SEP,
+        f"📊 *סיכום לפי שיטת תשלום:*",
+    ]
+    for kind, total in sorted(by_kind.items()):
+        lines.append(f"   📌 {kind}: ₪{total}")
+    lines.append(f"   → סהכ: *₪{grand_total}*")
+    lines.append(SEP)
+    lines.append("🔍 *פירוט נוסף:*")
+    lines.append("1️⃣ לפי לקוח")
+    lines.append("2️⃣ לפי בעל בית")
+    return "\n".join(lines)
+
+def build_deposits_by_contact(records: list) -> str:
+    """פירוט הפקדות לפי לקוח"""
+    SEP = "──────────────"
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    by_contact = {}
+    for rec in records:
+        c = rec["contact"] or "לא ידוע"
+        by_contact.setdefault(c, {"total": 0, "kinds": {}})
+        by_contact[c]["total"] += rec["amount"]
+        k = rec["kind"]
+        by_contact[c]["kinds"].setdefault(k, 0)
+        by_contact[c]["kinds"][k] += rec["amount"]
+    lines = [f"💳 *הפקדות לפי לקוח - {today_str}*", SEP]
+    grand = 0
+    for cname, data in sorted(by_contact.items()):
+        grand += data["total"]
+        lines.append(f"👤 *{cname}* - ₪{data['total']}")
+        for kind, amt in sorted(data["kinds"].items()):
+            lines.append(f"   • {kind}: ₪{amt}")
+        lines.append("")
+    lines.append(SEP)
+    lines.append(f"📊 סהכ: *₪{grand}*")
+    lines.append("")
+    lines.append("🔄 לעבור לפי בעל בית - כתוב *2*")
+    return "\n".join(lines)
+
+def build_deposits_by_landlord(records: list) -> str:
+    """פירוט הפקדות לפי בעל בית"""
+    SEP = "──────────────"
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    by_landlord = {}
+    for rec in records:
+        a = rec["landlord"] or "לא ידוע"
+        by_landlord.setdefault(a, {"total": 0, "kinds": {}})
+        by_landlord[a]["total"] += rec["amount"]
+        k = rec["kind"]
+        by_landlord[a]["kinds"].setdefault(k, 0)
+        by_landlord[a]["kinds"][k] += rec["amount"]
+    lines = [f"🏠 *הפקדות לפי בעל בית - {today_str}*", SEP]
+    grand = 0
+    for aname, data in sorted(by_landlord.items()):
+        grand += data["total"]
+        lines.append(f"🏠 *{aname}* - ₪{data['total']}")
+        for kind, amt in sorted(data["kinds"].items()):
+            lines.append(f"   • {kind}: ₪{amt}")
+        lines.append("")
+    lines.append(SEP)
+    lines.append(f"📊 סהכ: *₪{grand}*")
+    lines.append("")
+    lines.append("🔄 לעבור לפי לקוח - כתוב *1*")
+    return "\n".join(lines)
+
+# ─── פקודות חדשות: עזרה, ביטול, חובות, סטטוס, חיפוש, דוח לקוח/בעל בית ──────────
+
+HELP_TEXT = ("""
+🤖 *תפריט פקודות*
+────────────────────────────
+📋 *תפריט*
+  • תפריט → תפריט ראשי של כל הפקודות
+  • עזרה → הסבר מלא על כל פקודה
+  • ביטול → ביטול פעולה פעילה
+🧾 *חשבוניות*
+  • חשבונית ['לקוח'] ['בעל בית'] ['מוצר'] → יצירת חשבונית
+  • מחק חשבונית אחרונה → מחיקת חשבונית אחרונה
+  • מחק חשבונית אחרונה כפול → מחיקת 2 חשבוניות
+  • מחק חשבונית אחרונה משולש → מחיקת 3 חשבוניות
+  • חפש ['שם'] → חיפוש חשבוניות לפי שם לקוח
+💰 *תשלומים*
+  • תשלום ['לקוח'] ['סכום'] ['שיטה'] → עדכון תשלום
+👤 *לקוחות*
+  • עדכון פספורט ['שם'] → חילוץ שם מפספורט ועדכון שם ויזה
+  • סטטוס ['שם'] → סטטוס מלא של לקוח
+  • דוח לקוח ['שם'] → כל חשבוניות ותשלומים של לקוח
+  • דוח בית ['שם'] → כל הלקוחות וחשבוניות של בעל בית
+📊 *דוחות*
+  • דוח יומי → תפריט דוחות
+  • כל הדוחות → שליחת כל הדוחות בבת אחת
+  • חובות פתוחים → כל החשבוניות שלא שולמו
+────────────────────────────
+💡 טיפ: שלח *ביטול* לביטול פעולה פעילה בכל שלב
+""")
+
+MAIN_MENU_TEXT = ("""
+📋 *תפריט ראשי*
+────────────────────────────
+1️⃣  חשבונית [לקוח] [בעל בית] [מוצר]
+2️⃣  תשלום [לקוח] [סכום] [שיטה]
+3️⃣  חפש [שם] – חיפוש חשבוניות
+4️⃣  סטטוס [שם] – סטטוס לקוח
+5️⃣  דוח לקוח [שם] – דוח מלא
+6️⃣  דוח בית [שם] – דוח בעל בית
+7️⃣  חובות פתוחים – כל החשבוניות שלא שולמו
+8️⃣  דוח יומי – תפריט דוחות
+9️⃣  כל הדוחות – שליחת כל הדוחות
+────────────────────────────
+💡 לפרטים נוספים כתוב *עזרה*
+""")
+
+PAID_STATUSES = ["שולם מלא", "Paid", "paid"]
+UNPAID_STATUSES = ["לא שולם", "Unpaid", "unpaid"]
+
+def _word_search_contacts(name_query: str, per_page: int = 8):
+    """Search contacts using word search, then filter by smart exact-word logic."""
+    token, domain = get_access_token()
+    headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+    r = requests.get(f"{domain}/crm/v5/Contacts/search", headers=headers,
+                     params={"word": name_query, "per_page": per_page})
+    if r.status_code != 200:
+        return []
+    all_results = r.json().get("data", [])
+    return _smart_filter(all_results, name_query, "Full_Name")
+
+def _word_search_accounts(name_query: str, per_page: int = 8):
+    """Search accounts using word search, then filter by smart exact-word logic."""
+    token, domain = get_access_token()
+    headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+    r = requests.get(f"{domain}/crm/v5/Accounts/search", headers=headers,
+                     params={"word": name_query, "per_page": per_page})
+    if r.status_code != 200:
+        return []
+    all_results = r.json().get("data", [])
+    return _smart_filter(all_results, name_query, "Account_Name")
+
+def _smart_filter(results: list, query: str, name_field: str) -> list:
+    """
+    Hebrew-safe smart filtering:
+    - Exact whole-word match ONLY: split name into words by spaces/hyphens,
+      check if any word == query exactly (case-insensitive).
+    - If exact match found → return only those results.
+    - If no exact match → return ALL results (let user choose from menu).
+    This prevents 'סולומו' from also returning 'סולומון' and vice versa.
+    """
+    import re
+    q = query.strip().lower()
+
+    def get_words(name: str):
+        # split on spaces, hyphens, en-dash, em-dash
+        return [w.lower() for w in re.split(r'[\s\-\u2013\u2014]+', name.strip()) if w]
+
+    # Exact whole-word match only
+    exact = [r for r in results
+             if q in get_words(r.get(name_field, "") or "")]
+    if exact:
+        return exact
+
+    # No exact match - return all results so user can choose
+    return results
+
+def _format_contact_choice_menu(contacts, action_label: str) -> str:
+    """Format a numbered menu for contact selection"""
+    lines = [f"🔍 נמצאו {len(contacts)} לקוחות - בחר מספר ל{action_label}:",
+             "─" * 28]
+    for i, c in enumerate(contacts, 1):
+        cname = c.get("Full_Name", "")
+        account = c.get("Account_Name", {})
+        aname = account.get("name", "") if isinstance(account, dict) else str(account)
+        lines.append(f"{i}. {cname} (🏠 {aname})")
+    return "\n".join(lines)
+
+def _format_account_choice_menu(accounts, action_label: str) -> str:
+    """Format a numbered menu for account selection"""
+    lines = [f"🔍 נמצאו {len(accounts)} בעלי בית - בחר מספר ל{action_label}:",
+             "─" * 28]
+    for i, a in enumerate(accounts, 1):
+        aname = a.get("Account_Name", "")
+        lines.append(f"{i}. {aname}")
+    return "\n".join(lines)
+
+def build_open_debts_report() -> str:
+    """דוח חובות פתוחים - כל חשבוניות שלא שולמו"""
+    SEP = "──────────────"
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    try:
+        invoices = zoho_get("Invoices/search", {
+            "criteria": "(Status:equals:לא שולם)",
+            "fields": "Subject,Grand_Total,Contact_Name,Account_Name,Created_Time",
+            "sort_by": "Created_Time",
+            "sort_order": "desc",
+            "per_page": 100
+        })
+    except Exception as e:
+        return f"❌ שגיאה: {e}"
+    if not invoices:
+        return f"✅ אין חובות פתוחים כרגע! ({today_str})"
+    lines = [f"🚨 *חובות פתוחים - {today_str}*", SEP]
+    grand = 0
+    for inv in invoices:
+        contact = inv.get("Contact_Name", {})
+        cname = contact.get("name", "") if isinstance(contact, dict) else str(contact)
+        account = inv.get("Account_Name", {})
+        aname = account.get("name", "") if isinstance(account, dict) else str(account)
+        total = inv.get("Grand_Total", 0) or 0
+        created = inv.get("Created_Time", "")[:10] if inv.get("Created_Time") else ""
+        try:
+            days_open = (datetime.now() - datetime.strptime(created, "%Y-%m-%d")).days
+        except:
+            days_open = 0
+        grand += total
+        lines.append(f"👤 *{cname}*")
+        lines.append(f"   🏠 {aname} | 💰 ₪{total} | 📅 {created} ({days_open} ימים)")
+        lines.append("")
+    lines.append(SEP)
+    lines.append(f"🚨 סהכ חובות: *₪{grand}* | {len(invoices)} חשבוניות")
+    return "\n".join(lines)
+
+def build_customer_status(name_query: str, contact=None) -> str:
+    """סטטוס מלא של לקוח - רק חשבונות פתוחות + פרטי לקוח"""
+    SEP = "──────────────"
+    if contact is None:
+        contacts = _word_search_contacts(name_query)
+        if not contacts:
+            return f"❓ לא מצאתי לקוח בשם *{name_query}*"
+        contact = contacts[0]
+    # שלוף פרטים מלאים של איש הקשר כולל שדות מותאמים
+    try:
+        token, domain = get_access_token()
+        import requests as _req
+        r_full = _req.get(f"{domain}/crm/v5/Contacts/{contact['id']}",
+                          headers={"Authorization": f"Zoho-oauthtoken {token}"},
+                          params={"fields": "Full_Name,Account_Name,field8,field11,field12,field6,Mobile"})
+        if r_full.status_code == 200:
+            contact = r_full.json()["data"][0]
+    except:
+        pass
+    cname = contact.get("Full_Name", name_query)
+    account = contact.get("Account_Name", {})
+    aname = account.get("name", "") if isinstance(account, dict) else str(account)
+    company   = contact.get("field8", "") or ""   # חברה
+    active_lines = contact.get("field11", 0) or 0  # קווים פעילים
+    line_numbers = contact.get("field12", "") or "" # מספרי קווים
+    mobile = contact.get("Mobile", "") or ""
+    cid = contact["id"]
+    # שלוף חשבוניות פתוחות בלבד
+    try:
+        invoices = zoho_get("Invoices/search", {
+            "criteria": f"(Contact_Name:equals:{cid})",
+            "fields": "Subject,Grand_Total,Status,Created_Time,Invoiced_Items",
+            "sort_by": "Created_Time",
+            "sort_order": "desc",
+            "per_page": 100
+        })
+    except:
+        invoices = []
+    unpaid = [i for i in invoices if i.get("Status") not in PAID_STATUSES]
+    debt_amount = sum(i.get("Grand_Total", 0) or 0 for i in unpaid)
+    # סיכום מוצרים שנקנו (כולל סגורות)
+    product_counts = {}
+    for inv in invoices:
+        items = inv.get("Invoiced_Items") or []
+        if isinstance(items, list):
+            for item in items:
+                pname = ""
+                if isinstance(item, dict):
+                    prod = item.get("product") or item.get("Product_Name") or {}
+                    pname = prod.get("name", "") if isinstance(prod, dict) else str(prod)
+                if pname:
+                    product_counts[pname] = product_counts.get(pname, 0) + 1
+    lines = [
+        f"👤 *{cname}*",
+        SEP,
+        f"🏠 בעל בית: {aname}",
+    ]
+    if company:
+        lines.append(f"🏢 חברה: {company}")
+    if mobile:
+        lines.append(f"📱 טלפון: {mobile}")
+    lines.append(f"📞 קווים פעילים: {active_lines}")
+    if line_numbers:
+        lines.append(f"🔢 מספרי קווים: {line_numbers}")
+    lines.append(SEP)
+    if unpaid:
+        lines.append(f"🚨 *חוב פתוח: ₪{debt_amount} ({len(unpaid)} חשבונות)*")
+        for inv in unpaid:
+            created = inv.get("Created_Time", "")[:10]
+            lines.append(f"   • ₪{inv.get('Grand_Total',0)} | {created}")
+    else:
+        lines.append("✅ אין חובות פתוחים")
+    if product_counts:
+        lines.append(SEP)
+        lines.append("📦 *מוצרים שנקנו:*")
+        for pname, qty in sorted(product_counts.items(), key=lambda x: -x[1]):
+            lines.append(f"   • {pname} x{qty}")
+    return "\n".join(lines)
+
+def build_landlord_report(name_query: str, account=None) -> str:
+    """דוח בעל בית - רק חשבונות פתוחות לפי לקוח + קווים פעילים"""
+    SEP = "──────────────"
+    if account is None:
+        accounts = _word_search_accounts(name_query)
+        if not accounts:
+            return f"❓ לא מצאתי בעל בית בשם *{name_query}*"
+        account = accounts[0]
+    aname = account.get("Account_Name", name_query)
+    aid = account["id"]
+    # שלוף חשבונות פתוחות (לא שולם + שולם חלקית)
+    try:
+        inv_unpaid = zoho_get("Invoices/search", {
+            "criteria": f"(Account_Name:equals:{aid})and(Status:equals:לא שולם)",
+            "fields": "Subject,Grand_Total,Status,Contact_Name,Created_Time",
+            "sort_by": "Contact_Name", "sort_order": "asc", "per_page": 100
+        })
+    except:
+        inv_unpaid = []
+    try:
+        inv_partial = zoho_get("Invoices/search", {
+            "criteria": f"(Account_Name:equals:{aid})and(Status:equals:שולם חלקית)",
+            "fields": "Subject,Grand_Total,Status,Contact_Name,Created_Time",
+            "sort_by": "Contact_Name", "sort_order": "asc", "per_page": 100
+        })
+    except:
+        inv_partial = []
+    invoices = inv_unpaid + inv_partial
+    # קבץ לפי לקוח + שלוף קווים פעילים לכל איש קשר
+    by_contact = {}   # cname -> {"debt": total, "invs": [...], "contact_id": id}
+    contact_ids = {}
+    for inv in invoices:
+        contact = inv.get("Contact_Name", {})
+        cname = contact.get("name", "") if isinstance(contact, dict) else str(contact)
+        cid   = contact.get("id", "")   if isinstance(contact, dict) else ""
+        total = inv.get("Grand_Total", 0) or 0
+        created = inv.get("Created_Time", "")[:10]
+        if cname not in by_contact:
+            by_contact[cname] = {"debt": 0, "invs": []}
+            contact_ids[cname] = cid
+        status = inv.get("Status", "")
+        em = "🟡" if status == "שולם חלקית" else "🚨"
+        by_contact[cname]["debt"] += total
+        by_contact[cname]["invs"].append({"total": total, "date": created, "em": em})
+    # שלוף קווים פעילים לכל לקוח (שדה field11)
+    active_lines_map = {}
+    try:
+        token, domain = get_access_token()
+        import requests as _req
+        for cname, cid in contact_ids.items():
+            if cid:
+                r = _req.get(f"{domain}/crm/v5/Contacts/{cid}",
+                             headers={"Authorization": f"Zoho-oauthtoken {token}"},
+                             params={"fields": "field11"})
+                if r.status_code == 200:
+                    active_lines_map[cname] = r.json()["data"][0].get("field11", 0) or 0
+    except:
+        pass
+    grand_debt = sum(v["debt"] for v in by_contact.values())
+    lines = [
+        f"🏠 *{aname}*",
+        SEP,
+        f"🚨 חובות פתוחים: *₪{grand_debt}* | {len(invoices)} חשבונות | {len(by_contact)} לקוחות",
+        SEP,
+    ]
+    if not by_contact:
+        lines.append("✅ אין חובות פתוחים")
+        return "\n".join(lines)
+    # מיין לפי שם לקוח (אלפבית)
+    for cname in sorted(by_contact.keys()):
+        data = by_contact[cname]
+        active = active_lines_map.get(cname, 0)
+        lines.append(f"👤 *{cname}* | 📞 {active} קווים | 🚨 ₪{data['debt']}")
+        for i in data["invs"]:
+            lines.append(f"   {i['em']} ₪{i['total']} | {i['date']}")
+        lines.append("")
+    return "\n".join(lines)
+
+def update_passport_for_contact(contact: dict) -> str:
+    """
+    מוריד את קובץ הפספורט מהלקוח, מחלץ שם באנגלית ומעדכן שדה Visa_Name1.
+    מחזיר הודעת תוצאה.
+    """
+    contact_id = contact["id"]
+    contact_name = contact.get("Full_Name", "")
+
+    # שלוף קבצים מצורפים
+    token, domain = get_access_token()
+    headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+    r = requests.get(f"{domain}/crm/v2/Contacts/{contact_id}/Attachments", headers=headers_z)
+    if r.status_code != 200:
+        return f"❌ שגיאה בשליפת קבצים עבור {contact_name}"
+    attachments = r.json().get("data", [])
+    if not attachments:
+        return f"❌ לא נמצאו קבצים מצורפים עבור {contact_name}"
+
+    # מיין: פספורט ראשון, אחר כך שאר הקבצים
+    def passport_priority(att):
+        fname = att.get("File_Name", "").lower()
+        if "פספורט" in fname or "passport" in fname:
+            return 0
+        return 1
+    attachments_sorted = sorted(attachments, key=passport_priority)
+
+    # נסה לחלץ שם מכל קובץ עד שמצליח
+    for att in attachments_sorted:
+        fname = att.get("File_Name", "")
+        att_id = att["id"]
+        # הורד את הקובץ
+        r2 = requests.get(f"{domain}/crm/v2/Contacts/{contact_id}/Attachments/{att_id}", headers=headers_z)
+        if r2.status_code != 200:
+            continue
+        img_bytes = r2.content
+        # שלח ל-Gemini Vision לחילוץ שם
+        import base64
+        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+        # זהה סוג תמונה
+        content_type = r2.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+        if "png" in content_type:
+            mime = "image/png"
+        elif "webp" in content_type:
+            mime = "image/webp"
+        else:
+            mime = "image/jpeg"
+
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"inline_data": {"mime_type": mime, "data": img_b64}},
+                    {"text": "This is a passport or ID document. Extract ONLY the full English name of the person (given name + surname as written in the passport). Return ONLY the name in UPPERCASE, nothing else. Format: FIRSTNAME LASTNAME"}
+                ]
+            }],
+            "generationConfig": {"temperature": 0}
+        }
+        try:
+            gr = requests.post(gemini_url, json=payload, timeout=30)
+            if gr.status_code == 200:
+                extracted = gr.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                # ניקוי - רק אותיות לטיניות ורווחים
+                import re as _re
+                extracted_clean = _re.sub(r'[^A-Za-z\s]', '', extracted).strip().upper()
+                if extracted_clean and len(extracted_clean) > 3:
+                    # עדכן שדה Visa_Name1
+                    upd = requests.put(f"{domain}/crm/v2/Contacts",
+                                       headers={**headers_z, "Content-Type": "application/json"},
+                                       json={"data": [{"id": contact_id, "Visa_Name1": extracted_clean}]})
+                    if upd.status_code == 200 and upd.json().get("data", [{}])[0].get("code") == "SUCCESS":
+                        return f"✅ שם ויזה עודכן!\n👤 {contact_name}\n🪪 {extracted_clean}"
+                    else:
+                        return f"❌ שגיאה בעדכון שדה שם ויזה"
+        except Exception as e:
+            print(f"Gemini vision error: {e}")
+            continue
+
+    return f"❌ לא הצלחתי לחלץ שם מהמסמכים של {contact_name}"
+
+
 def handle_command(message, from_number):
     print(f"handle_command: '{message}' from {from_number}")
     session = sessions.get(from_number, {})
     pending = session.get("pending")
+
+    # === בחירת לקוח לעדכון פספורט ===
+    if pending == "choose_contact_passport":
+        contacts = session.get("contacts", [])
+        choice = message.strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(contacts):
+                sessions.pop(from_number, None)
+                return update_passport_for_contact(contacts[idx])
+        return f"❓ כתוב מספר בין 1 ל-{len(contacts)}"
+
+    # === בחירת לקוח מתוצאות חיפוש ===
+    if pending == "choose_contact_status":
+        contacts = session.get("contacts", [])
+        name_q = session.get("name_q", "")
+        choice = message.strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(contacts):
+                sessions.pop(from_number, None)
+                return build_customer_status(name_q, contact=contacts[idx])
+        return f"❓ כתוב מספר בין 1 ל-{len(contacts)}"
+
+    # === בחירת בעל בית מתוצאות חיפוש ===
+    if pending == "choose_account_report":
+        accounts = session.get("accounts", [])
+        name_q = session.get("name_q", "")
+        choice = message.strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(accounts):
+                sessions.pop(from_number, None)
+                return build_landlord_report(name_q, account=accounts[idx])
+        return f"❓ כתוב מספר בין 1 ל-{len(accounts)}"
+
+    # === דוח יומי - תפריט הפקדות משני ===
+    if pending == "deposits_detail_menu":
+        choice = message.strip()
+        records = session.get("deposits_records", [])
+        if choice == "1":
+            # שמור סשניה פעילה כדי שאפשר מעבר לבעל בית
+            sessions[from_number] = {"pending": "deposits_detail_menu", "deposits_records": records}
+            return build_deposits_by_contact(records)
+        elif choice == "2":
+            # שמור סשניה פעילה כדי שאפשר מעבר ללקוח
+            sessions[from_number] = {"pending": "deposits_detail_menu", "deposits_records": records}
+            return build_deposits_by_landlord(records)
+        else:
+            return "❓ כתוב *1* לפי לקוח או *2* לפי בעל בית"
+
+    # === דוח מכירות - תפריט משני ===
+    if pending == "sales_detail_menu":
+        choice = message.strip()
+        invoices = session.get("sales_invoices", [])
+        if choice == "1":
+            sessions[from_number] = {"pending": "sales_detail_menu", "sales_invoices": invoices}
+            return build_sales_by_contact(invoices)
+        elif choice == "2":
+            sessions[from_number] = {"pending": "sales_detail_menu", "sales_invoices": invoices}
+            return build_sales_by_landlord(invoices)
+        elif choice == "3":
+            sessions[from_number] = {"pending": "sales_detail_menu", "sales_invoices": invoices}
+            return build_sales_by_product(invoices)
+        else:
+            return "❓ כתוב 1, 2 או 3"
+
+    # === דוח יומי - תפריט ראשי ===
+    if pending == "report_menu":
+        choice = message.strip()
+        sessions.pop(from_number, None)
+        if choice == "1":
+            return build_daily_report()
+        elif choice == "2":
+            # שלוף נתונים ושמור בסשניה לתפריט
+            try:
+                invoices = _fetch_sales_today()
+            except:
+                invoices = []
+            sessions[from_number] = {"pending": "sales_detail_menu", "sales_invoices": invoices}
+            return build_sales_report_with_cache(invoices)
+        elif choice == "3":
+            # שלוף נתונים ושמור בסשניה לתפריט
+            try:
+                records = _fetch_deposits_today()
+            except:
+                records = []
+            sessions[from_number] = {"pending": "deposits_detail_menu", "deposits_records": records}
+            return build_deposits_report_with_cache(records)
+        else:
+            return "❓ בחר 1, 2 או 3"
+
+    # === דוח יומי - תפריט ===
+    if message.strip() in ["דוח יומי"]:
+        sessions[from_number] = {"pending": "report_menu"}
+        return (
+            "📊 *דוחות יומיים* - בחר סוג:\n"
+            "────────────────────────────\n"
+            "1️⃣ פעולות יומיות (WhatsApp)\n"
+            "2️⃣ דוח מכירות יומי (Zoho)\n"
+            "3️⃣ דוח הפקדות יומי (Zoho)\n"
+            "────────────────────────────\n"
+            "כתוב מספר לבחירה"
+        )
+
+    # === כל הדוחות - שליחת כל הדוחות בבת אחת ===
+    if message.strip() == "כל הדוחות":
+        sessions.pop(from_number, None)
+        all_reports = []
+
+        # 1. פעולות יומיות
+        all_reports.append(build_daily_report())
+
+        # 2. מכירות - כל 3 תצוגות
+        try:
+            sales_invoices = _fetch_sales_today()
+        except:
+            sales_invoices = []
+        all_reports.append(build_sales_report_with_cache(sales_invoices))
+        if sales_invoices:
+            all_reports.append(build_sales_by_contact(sales_invoices))
+            all_reports.append(build_sales_by_landlord(sales_invoices))
+            all_reports.append(build_sales_by_product(sales_invoices))
+
+        # 3. הפקדות - סיכום + לפי לקוח + לפי בעל בית
+        try:
+            dep_records = _fetch_deposits_today()
+        except:
+            dep_records = []
+        all_reports.append(build_deposits_report_with_cache(dep_records))
+        if dep_records:
+            all_reports.append(build_deposits_by_contact(dep_records))
+            all_reports.append(build_deposits_by_landlord(dep_records))
+
+        # שלח כל דוח בנפרד (split אוטומטי אם צריך)
+        owner_number = from_number
+        parts_to_send = []
+        for report in all_reports:
+            parts_to_send.extend(split_message(report))
+
+        # החזר את הדוח הראשון מייד, ושלח את השאר ברקע
+        if not parts_to_send:
+            return "😴 אין נתונים להיום"
+        first = parts_to_send[0]
+        rest = parts_to_send[1:]
+        if rest:
+            def _send_rest():
+                time.sleep(1)
+                for i, part in enumerate(rest):
+                    try:
+                        twilio_client.messages.create(
+                            from_=TWILIO_WHATSAPP_FROM,
+                            to=f"whatsapp:{owner_number.replace('whatsapp:', '')}",
+                            body=part
+                        )
+                        time.sleep(0.5)
+                    except Exception as e:
+                        print(f"[ALL REPORTS] Error sending part {i+2}: {e}")
+            threading.Thread(target=_send_rest, daemon=True).start()
+        return first
+
+    # === ביטול פעולה ===
+    if message.strip() in ["ביטול", "ביטול", "cancel"]:
+        sessions.pop(from_number, None)
+        return "✅ בוטל! אפשר לשלוח פקודה חדשה."
+
+    # === עזרה ===
+    if message.strip() in ["עזרה", "עזר", "help"]:
+        sessions.pop(from_number, None)
+        return HELP_TEXT.strip()
+
+    # === תפריט ===
+    if message.strip() in ["תפריט", "תפריט ראשי", "menu"]:
+        sessions.pop(from_number, None)
+        return MAIN_MENU_TEXT.strip()
+
+    # === חובות פתוחים ===
+    if message.strip() in ["חובות פתוחים", "חובות"]:
+        sessions.pop(from_number, None)
+        report = build_open_debts_report()
+        parts = split_message(report)
+        if len(parts) == 1:
+            return parts[0]
+        # שלח חלקים נוספים ברקע
+        def _send_debt_rest():
+            time.sleep(0.8)
+            for p in parts[1:]:
+                try:
+                    twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=f"whatsapp:{from_number.replace('whatsapp:', '')}", body=p)
+                    time.sleep(0.5)
+                except: pass
+        threading.Thread(target=_send_debt_rest, daemon=True).start()
+        return parts[0]
+
+    # === עדכון פספורט ===
+    msg_s = message.strip()
+    if msg_s.startswith("עדכון פספורט "):
+        name_q = msg_s[len("עדכון פספורט "):].strip()
+        if name_q:
+            contacts = _word_search_contacts(name_q)
+            if not contacts:
+                return f"❓ לא מצאתי לקוח בשם *{name_q}*"
+            if len(contacts) == 1:
+                sessions.pop(from_number, None)
+                return update_passport_for_contact(contacts[0])
+            # כמה לקוחות - הצג תפריט בחירה
+            sessions[from_number] = {"pending": "choose_contact_passport", "contacts": contacts, "name_q": name_q}
+            return _format_contact_choice_menu(contacts, "עדכון פספורט")
+
+    # === סטטוס לקוח ===
+    if msg_s.startswith("סטטוס "):
+        name_q = msg_s[len("סטטוס "):].strip()
+        if name_q:
+            contacts = _word_search_contacts(name_q)
+            if not contacts:
+                return f"❓ לא מצאתי לקוח בשם *{name_q}*"
+            if len(contacts) == 1:
+                sessions.pop(from_number, None)
+                return build_customer_status(name_q, contact=contacts[0])
+            sessions[from_number] = {"pending": "choose_contact_status", "contacts": contacts, "name_q": name_q}
+            return _format_contact_choice_menu(contacts, "סטטוס")
+
+    # === דוח בית ===
+    if msg_s.startswith("דוח בית "):
+        name_q = msg_s[len("דוח בית "):].strip()
+        if name_q:
+            accounts = _word_search_accounts(name_q)
+            if not accounts:
+                return f"❓ לא מצאתי בעל בית בשם *{name_q}*"
+            if len(accounts) == 1:
+                sessions.pop(from_number, None)
+                report = build_landlord_report(name_q, account=accounts[0])
+                parts = split_message(report)
+                if len(parts) == 1: return parts[0]
+                def _send_lr_rest():
+                    time.sleep(0.8)
+                    for p in parts[1:]:
+                        try: twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=f"whatsapp:{from_number.replace('whatsapp:', '')}", body=p); time.sleep(0.5)
+                        except: pass
+                threading.Thread(target=_send_lr_rest, daemon=True).start()
+                return parts[0]
+            sessions[from_number] = {"pending": "choose_account_report", "accounts": accounts, "name_q": name_q}
+            return _format_account_choice_menu(accounts, "דוח")
+
+    # === מחק חשבונית - אישור מחיקה ===
+    if pending == "confirm_delete_invoice":
+        invoices_to_delete = session.get("invoices_to_delete", [])
+        if message.strip() in ["כן", "yes", "1"]:
+            sessions.pop(from_number, None)
+            deleted = []
+            for inv in invoices_to_delete:
+                delete_invoice_with_payment(inv["id"])
+                subject = inv.get("Subject", inv.get("id", ""))
+                log_action("מחיקה", f"נמחקה חשבונית: {subject}")
+                deleted.append(subject)
+            return f"✅ {len(deleted)} חשבונית/ות נמחקו בהצלחה!\n" + "\n".join([f"📄 {s}" for s in deleted])
+
+        elif message.strip() in ["לא", "no", "2"]:
+            sessions.pop(from_number, None)
+            return "❌ המחיקה בוטלה"
+        else:
+            return "❓ כתוב *כן* למחיקה או *לא* לביטול"
 
     # === זיהוי פקודה חדשה כשיש session פתוח ===
     if pending and _looks_like_new_command(message):
@@ -888,12 +2045,76 @@ def handle_command(message, from_number):
         success = mark_invoice_paid(chosen["id"], pay_amount, pay_method)
         if success:
             acc_name = contact.get("Account_Name", {}).get("name", "") if isinstance(contact.get("Account_Name"), dict) else ""
+            log_action("תשלום", f"תשלום: {contact['Full_Name']} @ {acc_name} ₪{pay_amount} {pay_method}")
             return (f"✅ תשלום עודכן!\n"
                     f"👤 {contact['Full_Name']}\n"
                     f"🏠 {acc_name}\n"
                     f"💰 ₪{pay_amount} | {pay_method}\n"
                     f"📄 {chosen.get('Subject', '')}")
         return "❌ שגיאה בעדכון התשלום"
+
+    # === מחק חשבונית אחרונה / מחק חשבונית אחרונה כפול ===
+    msg_stripped = message.strip()
+    delete_count = 0
+    if msg_stripped == "מחק חשבונית אחרונה":
+        delete_count = 1
+    elif msg_stripped in ["מחק חשבונית אחרונה כפול", "מחק חשבונית אחרונה x2", "מחק 2 חשבוניות אחרונות"]:
+        delete_count = 2
+    elif msg_stripped in ["מחק חשבונית אחרונה משולש", "מחק חשבונית אחרונה x3", "מחק 3 חשבוניות אחרונות"]:
+        delete_count = 3
+    
+    if delete_count > 0:
+        # שלוף את N החשבוניות האחרונות
+        token, domain_url = get_access_token()
+        headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+        resp = requests.get(f"{domain_url}/crm/v5/Invoices", headers=headers_z, params={
+            "fields": "Subject,Status,Grand_Total,Contact_Name,Account_Name,Created_Time,Invoiced_Items",
+            "sort_by": "Created_Time",
+            "sort_order": "desc",
+            "per_page": delete_count
+        })
+        invoices_list = resp.json().get("data", []) if resp.status_code == 200 else []
+        if not invoices_list:
+            return "❌ לא מצאתי חשבוניות במערכת"
+        
+        # שלוף כל חשבונית בנפרד כדי לקבל את Invoiced_Items
+        full_invoices = []
+        for inv_stub in invoices_list:
+            inv_id = inv_stub["id"]
+            r2 = requests.get(f"{domain_url}/crm/v5/Invoices/{inv_id}", headers=headers_z)
+            if r2.status_code == 200:
+                full_inv = r2.json().get("data", [inv_stub])[0]
+            else:
+                full_inv = inv_stub
+            full_invoices.append(full_inv)
+        
+        # בנה הודעת אישור עם פרטי כל החשבוניות
+        lines = [f"🗑️ האם למחוק {len(full_invoices)} חשבונית/ות אחרונות?\n"]
+        for i, inv in enumerate(full_invoices, 1):
+            contact_obj = inv.get("Contact_Name", {})
+            contact_name = contact_obj.get("name", "") if isinstance(contact_obj, dict) else str(contact_obj)
+            account_obj = inv.get("Account_Name", {})
+            account_name = account_obj.get("name", "") if isinstance(account_obj, dict) else str(account_obj)
+            total = inv.get("Grand_Total", 0)
+            items = inv.get("Invoiced_Items", []) or []
+            product_name = ""
+            if items:
+                pn = items[0].get("Product_Name", {})
+                product_name = pn.get("name", "") if isinstance(pn, dict) else str(pn)
+            lines.append(
+                f"{'─'*20}\n"
+                f"👤 {contact_name}\n"
+                f"🏠 {account_name}\n"
+                f"💰 ₪{total}\n"
+                f"📦 {product_name}"
+            )
+        lines.append("\n\nכתוב *כן* למחיקה או *לא* לביטול")
+        
+        sessions[from_number] = {
+            "pending": "confirm_delete_invoice",
+            "invoices_to_delete": invoices_list
+        }
+        return "\n".join(lines)
 
     # === Fallback: זיהוי ידני של פקודות מיוחדות לפני Gemini ===
     msg_lower = message.strip().lower()
@@ -1194,15 +2415,17 @@ def create_invoice_and_pay_api():
     """
     try:
         data = request.get_json(force=True)
-        contact_name = (data.get("contact_name") or "").strip()
+        contact_name_raw = (data.get("contact_name") or "").strip()
         payment_method = (data.get("payment_method") or "מזומן").strip()
-
-        if not contact_name:
+        if not contact_name_raw:
             return {"success": False, "error": "contact_name is required"}, 400
-
+        # הסר ספרה מסוף השם (הספרה מציינת יום תשלום, לא קשורה לשם הלקוח)
+        import re as _re
+        contact_name = _re.sub(r'\s+\d+$', '', contact_name_raw).strip()
+        if contact_name != contact_name_raw:
+            print(f"Stripped trailing number: '{contact_name_raw}' → '{contact_name}'")
         print(f"=== create_invoice_and_pay: contact='{contact_name}' method='{payment_method}' ===")
-
-        # 1. מצא את המוצר 'כרטיס 050 מקומי- קו פעיל'
+        # 1. מצא את המוצר 'כרטיס 050 מקומי- קו פעיל'ל'
         products = find_product("כרטיס 050 מקומי קו פעיל")
         if not products:
             return {"success": False, "error": "Product 'כרטיס 050 מקומי- קו פעיל' not found"}, 404
@@ -1278,6 +2501,9 @@ def preload_cache():
 
 # הפעל טעינת קאש ברקע
 threading.Thread(target=preload_cache, daemon=True).start()
+
+# הפעל תזמון דוח יומי ברקע (23:30 כל יום)
+threading.Thread(target=_daily_report_scheduler, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
