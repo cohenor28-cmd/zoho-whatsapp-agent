@@ -3304,53 +3304,27 @@ def _crop_face_center(img_bytes: bytes):
         best_box = None
         best_conf = 0.0
 
-        # נסה MediaPipe Face Detection (שימוש singleton כדי לחסוך זיכרון)
+        # זיהוי פנים באמצעות OpenCV Haar Cascade (קל ויעיל)
         try:
-            detector = _get_mp_detector()
-            if detector is not None:
-                results = detector.process(arr)
-                if results.detections:
-                    for det in results.detections:
-                        conf = det.score[0] if det.score else 0.0
-                        bb = det.location_data.relative_bounding_box
-                        x1 = int(bb.xmin * iw)
-                        y1 = int(bb.ymin * ih)
-                        x2 = int((bb.xmin + bb.width) * iw)
-                        y2 = int((bb.ymin + bb.height) * ih)
-                        # ודא גבולות תקינים
-                        x1, y1 = max(0, x1), max(0, y1)
-                        x2, y2 = min(iw, x2), min(ih, y2)
-                        w, h = x2 - x1, y2 - y1
-                        debug_lines.append(f"MediaPipe: conf={conf:.2f} ({x1},{y1})-({x2},{y2}) {w}x{h}")
-                        if conf > best_conf:
-                            best_conf = conf
-                            best_box = (x1, y1, x2, y2)
-                    if best_box:
-                        debug_lines.append(f"MediaPipe מצא פנים! confidence={best_conf:.2f}")
-                else:
-                    debug_lines.append("MediaPipe לא מצא פנים")
-            else:
-                debug_lines.append("MediaPipe לא זמין, עובר ל-OpenCV")
-        except Exception as mp_err:
-            debug_lines.append(f"MediaPipe שגיאה: {str(mp_err)[:80]}")
-
-        # fallback: נסה OpenCV אם MediaPipe לא מצא
-        if best_box is None:
-            try:
-                import cv2
-                debug_lines.append("מנסה OpenCV Haar Cascade כ-fallback")
-                gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-                cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-                face_cascade = cv2.CascadeClassifier(cascade_path)
-                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-                if len(faces) == 0:
-                    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=3, minSize=(20, 20))
-                debug_lines.append(f"Haar: {len(faces)} פנים")
-                if len(faces) > 0:
-                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-                    best_box = (x, y, x + w, y + h)
-            except Exception as cv_err:
-                debug_lines.append(f"OpenCV שגיאה: {str(cv_err)[:80]}")
+            import cv2
+            gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            face_cascade = cv2.CascadeClassifier(cascade_path)
+            # ניסיון ראשון - הגדרות סטנדרטיות
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            if len(faces) == 0:
+                # ניסיון שני - הגדרות מרוככות יותר
+                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=3, minSize=(20, 20))
+            if len(faces) == 0:
+                # ניסיון שלישי - תמונות קשות
+                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.03, minNeighbors=2, minSize=(15, 15))
+            debug_lines.append(f"Haar: {len(faces)} פנים")
+            if len(faces) > 0:
+                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                best_box = (x, y, x + w, y + h)
+                debug_lines.append(f"Haar מצא פנים: ({x},{y}) {w}x{h}")
+        except Exception as cv_err:
+            debug_lines.append(f"OpenCV שגיאה: {str(cv_err)[:80]}")
 
         if best_box is None:
             return _fallback_crop(img_pil, iw, ih, debug_lines, "no face detected")
