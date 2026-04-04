@@ -44,6 +44,26 @@ _product_cache = {
 # ─── Session memory (per phone number) ────────────────────────────────────────
 sessions = {}
 
+# ─── MediaPipe singleton - נוצר פעם אחת ולא מחדש לכל תמונה ──────────────────
+_mp_face_detector = None
+_mp_face_lock = threading.Lock()
+
+def _get_mp_detector():
+    """מחזיר instance יחיד של MediaPipe FaceDetection (thread-safe singleton)"""
+    global _mp_face_detector
+    if _mp_face_detector is None:
+        with _mp_face_lock:
+            if _mp_face_detector is None:
+                try:
+                    import mediapipe as mp
+                    _mp_face_detector = mp.solutions.face_detection.FaceDetection(
+                        model_selection=1, min_detection_confidence=0.3
+                    )
+                    print("[MediaPipe] Singleton detector initialized")
+                except Exception as e:
+                    print(f"[MediaPipe] Failed to init singleton: {e}")
+    return _mp_face_detector
+
 # ──# ─── יומן פעולות יומי (קובץ קבוע) ──────────────────────────────────
 LOG_DIR = "/tmp/bot_logs"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -3284,11 +3304,10 @@ def _crop_face_center(img_bytes: bytes):
         best_box = None
         best_conf = 0.0
 
-        # נסה MediaPipe Face Detection
+        # נסה MediaPipe Face Detection (שימוש singleton כדי לחסוך זיכרון)
         try:
-            import mediapipe as mp
-            mp_face = mp.solutions.face_detection
-            with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.3) as detector:
+            detector = _get_mp_detector()
+            if detector is not None:
                 results = detector.process(arr)
                 if results.detections:
                     for det in results.detections:
@@ -3310,8 +3329,8 @@ def _crop_face_center(img_bytes: bytes):
                         debug_lines.append(f"MediaPipe מצא פנים! confidence={best_conf:.2f}")
                 else:
                     debug_lines.append("MediaPipe לא מצא פנים")
-        except ImportError:
-            debug_lines.append("MediaPipe לא מותקן, מנסה OpenCV")
+            else:
+                debug_lines.append("MediaPipe לא זמין, עובר ל-OpenCV")
         except Exception as mp_err:
             debug_lines.append(f"MediaPipe שגיאה: {str(mp_err)[:80]}")
 
