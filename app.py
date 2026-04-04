@@ -108,8 +108,12 @@ def build_daily_report() -> str:
     lines.append("🤖 _הבוט שלך - עד מחר!_")
     return "\n".join(lines)
 
-def split_message(text: str, max_len: int = 1550) -> list:
+MAX_MSG_LEN = 1400  # גבול תווים להודעות WhatsApp
+
+def split_message(text: str, max_len: int = None) -> list:
     """פצל הודעה לחלקים לפי גבול תווים, חיתוך בשורות"""
+    if max_len is None:
+        max_len = MAX_MSG_LEN
     if len(text) <= max_len:
         return [text]
     parts = []
@@ -3821,19 +3825,18 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
             no_image.append(f"{cname} (אין קבצים)")
         time.sleep(0.1)
 
-    # שלח סיכום לפני התחלה
+    # שלח סיכום לפני התחלה - רק מספרים, ללא רשימת קבצים
+    total = len(all_contacts)
+    will_update = len(to_process)
+    will_skip = len(no_image)
     summary_lines = [
         f"🔍 *סיכום לפני עדכון פרופילים - {aname}*",
         "─" * 28,
-        f"🟢 נמצאה תמונה ({len(to_process)}) - יעודכנו:",
+        f"👥 סה\"כ לקוחות: {total}",
+        f"🟢 יעודכנו: {will_update}",
+        f"⏩ ידולגו (אין תמונה): {will_skip}",
+        f"\n⏳ מתחיל עיבוד {will_update} לקוחות...",
     ]
-    for c, att, reason in to_process:
-        summary_lines.append(f"  • {c.get('Full_Name','')} ← {reason}")
-    if no_image:
-        summary_lines.append(f"\n⏩ אין תמונה ({len(no_image)}) - ידולגו:")
-        for n in no_image:
-            summary_lines.append(f"  • {n}")
-    summary_lines.append(f"\n⏳ מתחיל עיבוד {len(to_process)} לקוחות...")
     _send_reply("\n".join(summary_lines), from_number)
 
     if not to_process:
@@ -3891,22 +3894,14 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
     return "\n".join(lines), used_att_ids
 
 def _send_reply(reply: str, from_number: str, original_msg: str = ""):
-    """שולח תשובה ל-WhatsApp עם ציטוט, מפצל אם ארוך מדי."""
+    """שולח תשובה ל-WhatsApp, מפצל אוטומטית לכמה חלקים אם ארוך מדי."""
     quote = f"📩 \"{original_msg}\"\n─────────────\n" if original_msg else ""
     full_reply = quote + reply
-    MAX_LEN = 1550
-    if len(full_reply) > MAX_LEN:
-        mid = len(full_reply) // 2
-        cut = full_reply.rfind('\n', mid - 200, mid + 200)
-        if cut == -1:
-            cut = mid
-        part1 = full_reply[:cut].strip()
-        part2 = full_reply[cut:].strip()
-        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part1)
-        time.sleep(0.5)
-        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part2)
-    else:
-        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=full_reply)
+    parts = split_message(full_reply)
+    for i, part in enumerate(parts):
+        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
+        if i < len(parts) - 1:
+            time.sleep(0.5)
 
 
 def handle_passport_image_upload(name_q: str, media_url: str, media_type: str, from_number: str) -> str:
@@ -4059,26 +4054,14 @@ def webhook():
         quote = f"📩 \"{incoming_msg}\"\n─────────────\n"
         full_reply = quote + reply
         
-        # Twilio WhatsApp מגביל ל-1600 תווים - שלח ב-2 חלקים אם ארוך מדי
-        MAX_LEN = 1550  # מרווח ביטחון מ-1600
-        if len(full_reply) > MAX_LEN:
-            # מצא נקודת חיתוך טובה (סוף שורה) בסביבות האמצע
-            mid = len(full_reply) // 2
-            # חפש \n קרוב לאמצע (עד 200 תווים לפנים)
-            cut = full_reply.rfind('\n', mid - 200, mid + 200)
-            if cut == -1:
-                cut = mid  # אם אין \n - חתוך באמצע
-            part1 = full_reply[:cut].strip()
-            part2 = full_reply[cut:].strip()
-            print(f"=== Reply SPLIT: part1={len(part1)} chars, part2={len(part2)} chars ===")
-            twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part1)
-            import time as _time; _time.sleep(0.5)  # המתן קצת בין ההודעות
-            twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part2)
-            print(f"=== 2 messages sent successfully ===")
-        else:
-            print(f"=== Reply: '{full_reply[:100]}' ===")
-            twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=full_reply)
-            print(f"=== Message sent successfully ===")
+        # פצל הודעה ל-1400 תווים מקסימום (תמיכה בכמה חלקים)
+        parts = split_message(full_reply)
+        print(f"=== Reply: {len(full_reply)} chars, {len(parts)} part(s) ===")
+        for i, part in enumerate(parts):
+            twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
+            if i < len(parts) - 1:
+                import time as _time; _time.sleep(0.5)
+        print(f"=== {len(parts)} message(s) sent successfully ===")
         return str(MessagingResponse())
     except Exception as e:
         print(f"=== WEBHOOK ERROR: {e} ===")
