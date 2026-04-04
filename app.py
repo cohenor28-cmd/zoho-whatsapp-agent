@@ -3852,22 +3852,26 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
         # בדוק אם כבר יש תמונת פרופיל - אם כן, דלג
         try:
             photo_r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/photo", headers=headers_z, timeout=15)
-            if photo_r.status_code == 200 and len(photo_r.content) > 1000:
+            _has_photo = photo_r.status_code == 200 and len(photo_r.content) > 1000
+            del photo_r  # שחרר זיכרון מידי
+            if _has_photo:
                 has_photo_already.append(cname)
                 time.sleep(0.1)
                 continue
         except Exception:
             pass  # אם הבדיקה נכשלה, ממשיכים לעיבוד
 
-        r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z)
+        r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z, timeout=15)
         if r.status_code == 200 and r.json().get("data"):
             atts = r.json()["data"]
             best_att, reason = _pick_best_attachment(atts, cname)
+            del r  # שחרר זיכרון
             if best_att:
                 to_process.append((contact, best_att, reason))
             else:
                 no_image.append(f"{cname} ({reason})")
         else:
+            del r
             no_image.append(f"{cname} (אין קבצים)")
         time.sleep(0.1)
 
@@ -4329,7 +4333,7 @@ def _auto_resume_on_startup():
     except Exception as e:
         print(f"[AutoResume] שגיאה: {e}")
 
-threading.Thread(target=_auto_resume_on_startup, daemon=True).start()
+# threading.Thread(target=_auto_resume_on_startup, daemon=True).start()  # מושבת - גורם ללופ
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
