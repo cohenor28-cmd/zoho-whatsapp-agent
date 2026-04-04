@@ -3811,6 +3811,8 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
     aname = account.get("Account_Name", "")
     token, domain = get_access_token()
     headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+    if skip_ids is None:
+        skip_ids = set()
 
     all_contacts = []
     page = 1
