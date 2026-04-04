@@ -3742,9 +3742,10 @@ def _fix_profiles_from_next_attachment(to_fix: list, account: dict, from_number:
     return "\n".join(lines), new_used_att_ids
 
 
-def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
+def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: set = None) -> str:
     """
     עובר על כל לקוחות של בעל בית ומחפש תמונת פרופיל לפי סדר עדיפויות:
+    skip_ids: סט של contact IDs שכבר עובדו (לדילוג בחידוש אוטומטי)
     1. קובץ בשם 'פרופיל' (כולל וריאציות)
     2. קובץ בשם 'מכשיר' או שמכיל 'מכשיר'
     3. קובץ שמכיל את שם הלקוח
@@ -3836,6 +3837,11 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
         cid = contact["id"]
         cname = contact.get("Full_Name", "")
 
+        # דלג לקוחות שכבר עובדו בריצה קודמת (חידוש אוטומטי)
+        if cid in skip_ids:
+            has_photo_already.append(cname)
+            continue
+
         # רענן טוקן כל 20 לקוחות כדי למנוע תפיגת טוקן
         if scan_idx % 20 == 0:
             token, domain = get_access_token()
@@ -3868,8 +3874,10 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
     will_update = len(to_process)
     will_skip = len(no_image)
     already_have = len(has_photo_already)
+    is_resume = len(skip_ids) > 0
+    title = f"🔄 *חידוש פרופילים - {aname}*" if is_resume else f"🔍 *סיכום לפני עדכון פרופילים - {aname}*"
     summary_lines = [
-        f"🔍 *סיכום לפני עדכון פרופילים - {aname}*",
+        title,
         "─" * 28,
         f"👥 סה\"כ לקוחות: {total}",
         f"🟢 יעודכנו (אין תמונה): {will_update}",
@@ -4307,8 +4315,8 @@ def _auto_resume_on_startup():
             return
         account_obj = r_acc.json().get("data", [{}])[0]
 
-        # הרץ מחדש - bulk_profile_update_for_account ידלג אוטומטית לקוחות שכבר יש להם פרופיל
-        result, _ = bulk_profile_update_for_account(account_obj, from_number)
+        # הרץ מחדש עם דילוג ה-IDs שכבר עובדו
+        result, _ = bulk_profile_update_for_account(account_obj, from_number, skip_ids=completed_ids)
         _send_reply(result, from_number)
 
     except Exception as e:
