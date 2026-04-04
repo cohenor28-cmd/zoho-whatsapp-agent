@@ -44,25 +44,36 @@ _product_cache = {
 # ─── Session memory (per phone number) ────────────────────────────────────────
 sessions = {}
 
-# ─── MediaPipe singleton - נוצר פעם אחת ולא מחדש לכל תמונה ──────────────────
-_mp_face_detector = None
-_mp_face_lock = threading.Lock()
+# ─── Resume State - שמירת מצב פרופיל כללי לשחזור אחרי רסטרט ──────────────────
+RESUME_STATE_FILE = "/tmp/bot_logs/profile_resume_state.json"
+_resume_lock = threading.Lock()
 
-def _get_mp_detector():
-    """מחזיר instance יחיד של MediaPipe FaceDetection (thread-safe singleton)"""
-    global _mp_face_detector
-    if _mp_face_detector is None:
-        with _mp_face_lock:
-            if _mp_face_detector is None:
-                try:
-                    import mediapipe as mp
-                    _mp_face_detector = mp.solutions.face_detection.FaceDetection(
-                        model_selection=1, min_detection_confidence=0.3
-                    )
-                    print("[MediaPipe] Singleton detector initialized")
-                except Exception as e:
-                    print(f"[MediaPipe] Failed to init singleton: {e}")
-    return _mp_face_detector
+def _save_resume_state(state: dict):
+    """שומר מצב ריצה ל-/tmp כדי שיוכל להמשיך אחרי רסטרט"""
+    try:
+        os.makedirs(os.path.dirname(RESUME_STATE_FILE), exist_ok=True)
+        with open(RESUME_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[Resume] Failed to save state: {e}")
+
+def _load_resume_state() -> dict:
+    """טוען מצב ריצה קודם אם קיים"""
+    try:
+        if os.path.exists(RESUME_STATE_FILE):
+            with open(RESUME_STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def _clear_resume_state():
+    """מוחק את קובץ המצב אחרי סיום מוצלח"""
+    try:
+        if os.path.exists(RESUME_STATE_FILE):
+            os.remove(RESUME_STATE_FILE)
+    except Exception:
+        pass
 
 # ──# ─── יומן פעולות יומי (קובץ קבוע) ──────────────────────────────────
 LOG_DIR = "/tmp/bot_logs"
@@ -3876,6 +3887,17 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
 
     used_att_ids = {}  # {contact_id: att_id} - מעקב אחר קבצים ששימשו
 
+    # שמור מצב ראשוני לפני התחלת עיבוד
+    _save_resume_state({
+        "from_number": from_number,
+        "account_id": aid,
+        "account_name": aname,
+        "started_at": time.time(),
+        "total": len(to_process),
+        "completed_ids": [],
+        "status": "running"
+    })
+
     for i, (contact, att, reason) in enumerate(to_process, 1):
         cname = contact.get("Full_Name", "")
         cid = contact["id"]
@@ -3920,9 +3942,22 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
             failed.append(cname)
             _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה: {str(e)[:60]}", from_number)
 
+        # עדכן מצב אחרי כל לקוח - כדי שיוכל להמשיך אחרי רסטרט
+        _save_resume_state({
+            "from_number": from_number,
+            "account_id": aid,
+            "account_name": aname,
+            "started_at": time.time(),
+            "total": len(to_process),
+            "completed_ids": [c["id"] for c, _, _ in to_process[:i]],
+            "last_index": i,
+            "status": "running"
+        })
+
         time.sleep(0.5)
 
-    # סיכום סופי
+    # סיכום סופי - מחק מצב אחרי הצלחה
+    _clear_resume_state()
     lines = [f"🏠 *סיכום סופי - פרופילים {aname}*", "─" * 28]
     lines.append(f"✅ עודכנו: {len(updated)}")
     if no_image:
@@ -4215,9 +4250,71 @@ def preload_cache():
 
 # הפעל טעינת קאש ברקע
 threading.Thread(target=preload_cache, daemon=True).start()
-
 # הפעל תזמון דוח יומי ברקע (23:30 כל יום)
 threading.Thread(target=_daily_report_scheduler, daemon=True).start()
+
+# ─── חידוש אוטומטי לפרופיל כללי אחרי רסטרט ──────────────────────────────────
+def _auto_resume_on_startup():
+    """
+    בדיקה בהפעלה: אם יש קובץ מצב של ריצה לא גמורה,
+    מתחיל מחדש את פרופיל כללי מהלקוח שנעצר באמצע.
+    """
+    try:
+        time.sleep(8)  # חכה שהשרת יעלה לגמרי לפני בדיקה
+        state = _load_resume_state()
+        if not state or state.get("status") != "running":
+            print("[AutoResume] אין ריצה לא גמורה לחידוש")
+            return
+
+        from_number = state.get("from_number", "")
+        account_id  = state.get("account_id", "")
+        account_name = state.get("account_name", "")
+        completed_ids = set(state.get("completed_ids", []))
+        last_index = state.get("last_index", 0)
+        total = state.get("total", 0)
+        started_at = state.get("started_at", 0)
+
+        if not from_number or not account_id:
+            print("[AutoResume] מצב חסר פרטים - מדלג")
+            _clear_resume_state()
+            return
+
+        # בדוק שהריצה לא ישנה מדי (24 שעות)
+        if time.time() - started_at > 86400:
+            print("[AutoResume] קובץ מצב ישן מדי (>24ש) - מדלג")
+            _clear_resume_state()
+            return
+
+        print(f"[AutoResume] מזוהה ריצה לא גמורה: {account_name} ({last_index}/{total})")
+
+        # שלח הודעה למשתמש
+        _send_reply(
+            f"🔄 *חידוש אוטומטי - פרופיל כללי*\n"
+            f"🏠 בית: {account_name}\n"
+            f"⏸️ נעצר בלקוח {last_index}/{total}\n"
+            f"⏳ ממשיך מלקוח {last_index + 1}...",
+            from_number
+        )
+
+        # טען את החשבון מזוה
+        token, domain = get_access_token()
+        headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+        r_acc = requests.get(f"{domain}/crm/v5/Accounts/{account_id}",
+                             headers=headers_z, timeout=20)
+        if r_acc.status_code != 200:
+            _send_reply(f"❌ לא ניתן לטעון חשבון {account_name} ({r_acc.status_code})", from_number)
+            _clear_resume_state()
+            return
+        account_obj = r_acc.json().get("data", [{}])[0]
+
+        # הרץ מחדש - bulk_profile_update_for_account ידלג אוטומטית לקוחות שכבר יש להם פרופיל
+        result, _ = bulk_profile_update_for_account(account_obj, from_number)
+        _send_reply(result, from_number)
+
+    except Exception as e:
+        print(f"[AutoResume] שגיאה: {e}")
+
+threading.Thread(target=_auto_resume_on_startup, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
