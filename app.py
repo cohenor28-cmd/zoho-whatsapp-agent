@@ -3826,10 +3826,22 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
     # סרוק כל לקוח ובחר את הקובץ הטוב ביותר
     to_process = []   # [(contact, attachment, reason)]
     no_image = []     # [cname]
+    has_photo_already = []  # [cname] - לקוחות שכבר יש תמונת פרופיל
 
     for contact in all_contacts:
         cid = contact["id"]
         cname = contact.get("Full_Name", "")
+
+        # בדוק אם כבר יש תמונת פרופיל - אם כן, דלג
+        try:
+            photo_r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/photo", headers=headers_z, timeout=15)
+            if photo_r.status_code == 200 and len(photo_r.content) > 1000:
+                has_photo_already.append(cname)
+                time.sleep(0.1)
+                continue
+        except Exception:
+            pass  # אם הבדיקה נכשלה, ממשיכים לעיבוד
+
         r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z)
         if r.status_code == 200 and r.json().get("data"):
             atts = r.json()["data"]
@@ -3846,12 +3858,14 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
     total = len(all_contacts)
     will_update = len(to_process)
     will_skip = len(no_image)
+    already_have = len(has_photo_already)
     summary_lines = [
         f"🔍 *סיכום לפני עדכון פרופילים - {aname}*",
         "─" * 28,
         f"👥 סה\"כ לקוחות: {total}",
-        f"🟢 יעודכנו: {will_update}",
-        f"⏩ ידולגו (אין תמונה): {will_skip}",
+        f"🟢 יעודכנו (אין תמונה): {will_update}",
+        f"⏩ דולגו (כבר יש פרופיל): {already_have}",
+        f"⏩ דולגו (אין תמונה): {will_skip}",
         f"\n⏳ מתחיל עיבוד {will_update} לקוחות...",
     ]
     _send_reply("\n".join(summary_lines), from_number)
