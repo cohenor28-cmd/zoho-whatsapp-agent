@@ -3588,7 +3588,7 @@ def _scan_profiles_for_account(account: dict) -> tuple:
         page += 1
 
     if not all_contacts:
-        return f"❌ לא נמצאו לקוחות - *{aname}*", []
+        return f"❌ לא נמצאו לקוחות - *{aname}*", {}, []
 
     contacts_data = []
     for contact in all_contacts:
@@ -3821,7 +3821,7 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
         page += 1
 
     if not all_contacts:
-        return f"❌ לא נמצאו לקוחות - *{aname}*"
+        return f"❌ לא נמצאו לקוחות - *{aname}*", {}
 
     # סרוק כל לקוח ובחר את הקובץ הטוב ביותר
     to_process = []   # [(contact, attachment, reason)]
@@ -3857,7 +3857,7 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
     _send_reply("\n".join(summary_lines), from_number)
 
     if not to_process:
-        return f"❌ לא נמצאו תמונות בבית *{aname}*"
+        return f"❌ לא נמצאו תמונות בבית *{aname}*", {}
 
     updated = []
     failed = []
