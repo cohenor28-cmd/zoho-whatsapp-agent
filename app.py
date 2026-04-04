@@ -3828,9 +3828,14 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
     no_image = []     # [cname]
     has_photo_already = []  # [cname] - לקוחות שכבר יש תמונת פרופיל
 
-    for contact in all_contacts:
+    for scan_idx, contact in enumerate(all_contacts):
         cid = contact["id"]
         cname = contact.get("Full_Name", "")
+
+        # רענן טוקן כל 20 לקוחות כדי למנוע תפיגת טוקן
+        if scan_idx % 20 == 0:
+            token, domain = get_access_token()
+            headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
 
         # בדוק אם כבר יש תמונת פרופיל - אם כן, דלג
         try:
@@ -3881,6 +3886,12 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
     for i, (contact, att, reason) in enumerate(to_process, 1):
         cname = contact.get("Full_Name", "")
         cid = contact["id"]
+
+        # רענן טוקן כל 20 לקוחות כדי למנוע תפיגת טוקן
+        if i % 20 == 1:
+            token, domain = get_access_token()
+            headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+
         try:
             r2 = requests.get(
                 f"{domain}/crm/v2/Contacts/{cid}/Attachments/{att['id']}",
