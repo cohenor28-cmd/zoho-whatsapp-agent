@@ -1728,14 +1728,17 @@ def handle_command(message, from_number):
         if choice in ["1", "כן"]:
             sessions.pop(from_number, None)
             def _run_bulk_profile():
-                result, used_att_ids = bulk_profile_update_for_account(account, from_number)
-                # שמור את ה-attachment IDs ששימשו כדי שהתיקון ידלג עליהם
-                sessions[from_number] = {
-                    "pending": "after_bulk_profile",
-                    "account": account,
-                    "used_att_ids": used_att_ids
-                }
-                _send_reply(result, from_number)
+                try:
+                    result, used_att_ids = bulk_profile_update_for_account(account, from_number)
+                    # שמור את ה-attachment IDs ששימשו כדי שהתיקון ידלג עליהם
+                    sessions[from_number] = {
+                        "pending": "after_bulk_profile",
+                        "account": account,
+                        "used_att_ids": used_att_ids
+                    }
+                    _send_reply(result, from_number)
+                except Exception as e:
+                    _send_reply(f"❌ שגיאה בעדכון פרופילים: {str(e)[:100]}", from_number)
             threading.Thread(target=_run_bulk_profile, daemon=True).start()
             aname = account.get("Account_Name", "")
             return f"⏳ מתחיל עדכון פרופילים - *{aname}*... תקבל עדכון בסיום."
@@ -2414,17 +2417,31 @@ def handle_command(message, from_number):
         sessions.pop(from_number, None)
         names = ", ".join(a.get("Account_Name","") for a in chosen)
         def _run_general_profile():
-            try:
-                total_updated = 0
-                total_skipped = 0
-                for acc in chosen:
-                    aname = acc.get("Account_Name", "")
+            total_updated = 0
+            total_failed = 0
+            for acc in chosen:
+                aname = acc.get("Account_Name", "")
+                try:
                     _send_reply(f"⏳ מעדכן פרופילים - *{aname}*...", from_number)
-                    result = bulk_profile_update_for_account(acc, from_number)
-                    _send_reply(result, from_number)
-                _send_reply(f"✅ *סיום פרופיל כללי*\nעודכנו {len(chosen)} בעלי בתים: {names}", from_number)
-            except Exception as e:
-                _send_reply(f"❌ שגיאה: {e}", from_number)
+                    result, _ = bulk_profile_update_for_account(acc, from_number)
+                    # ספור עדכונים/שגיאות מהתוצאה
+                    if "עודכנו:" in result:
+                        for line in result.split("\n"):
+                            if "עודכנו:" in line:
+                                try: total_updated += int(''.join(filter(str.isdigit, line)))
+                                except: pass
+                            elif "שגיאות:" in line:
+                                try: total_failed += int(''.join(filter(str.isdigit, line)))
+                                except: pass
+                except Exception as e:
+                    _send_reply(f"❌ שגיאה בעיבוד *{aname}*: {str(e)[:80]}", from_number)
+            _send_reply(
+                f"✅ *סיום פרופיל כללי*\n"
+                f"🏠 בעלי בתים: {len(chosen)}\n"
+                f"🟢 סה\"כ עודכנו: {total_updated}\n"
+                + (f"❌ שגיאות: {total_failed}" if total_failed else ""),
+                from_number
+            )
         threading.Thread(target=_run_general_profile, daemon=True).start()
         return f"⏳ מתחיל עדכון פרופילים ל-{len(chosen)} בעלי בתים..."
 
@@ -3850,35 +3867,40 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
     for i, (contact, att, reason) in enumerate(to_process, 1):
         cname = contact.get("Full_Name", "")
         cid = contact["id"]
-
-        r2 = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments/{att['id']}", headers=headers_z)
-        if r2.status_code != 200:
-            failed.append(cname)
-            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה בהורדת קובץ ({r2.status_code})", from_number)
-            continue
-
-        face_bytes, face_dbg = _crop_face_center(r2.content)
-        if not face_bytes:
-            failed.append(cname)
-            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - חיתוך נכשל: {face_dbg[:60]}", from_number)
-            continue
-
         try:
+            r2 = requests.get(
+                f"{domain}/crm/v2/Contacts/{cid}/Attachments/{att['id']}",
+                headers=headers_z, timeout=30
+            )
+            if r2.status_code != 200:
+                failed.append(cname)
+                _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה בהורדת קובץ ({r2.status_code})", from_number)
+                time.sleep(0.3)
+                continue
+
+            face_bytes, face_dbg = _crop_face_center(r2.content)
+            if not face_bytes:
+                failed.append(cname)
+                _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - חיתוך נכשל: {face_dbg[:60]}", from_number)
+                time.sleep(0.3)
+                continue
+
             photo_resp = requests.post(
                 f"{domain}/crm/v2/Contacts/{cid}/photo",
                 headers=headers_z,
-                files={"file": ("profile.jpg", face_bytes, "image/jpeg")}
+                files={"file": ("profile.jpg", face_bytes, "image/jpeg")},
+                timeout=30
             )
             if photo_resp.status_code in [200, 201, 202]:
                 updated.append(cname)
-                used_att_ids[cid] = [att['id']]  # שמור את ה-attachment ששימש
+                used_att_ids[cid] = [att['id']]
                 _send_reply(f"✅ [{i}/{len(to_process)}] {cname} - פרופיל עודכן ({reason})", from_number)
             else:
                 failed.append(cname)
                 _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה ({photo_resp.status_code})", from_number)
         except Exception as e:
             failed.append(cname)
-            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה: {str(e)[:50]}", from_number)
+            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה: {str(e)[:60]}", from_number)
 
         time.sleep(0.5)
 
