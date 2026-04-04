@@ -3897,14 +3897,16 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
 
     used_att_ids = {}  # {contact_id: att_id} - מעקב אחר קבצים ששימשו
 
-    # שמור מצב ראשוני לפני התחלת עיבוד
+    # שמור מצב ראשוני לפני התחלת עיבוד - שמור started_at מהקובץ הקודם אם קיים
+    _existing = _load_resume_state()
+    _started_at = _existing.get("started_at", time.time()) if _existing else time.time()
     _save_resume_state({
         "from_number": from_number,
         "account_id": aid,
         "account_name": aname,
-        "started_at": time.time(),
+        "started_at": _started_at,
         "total": len(to_process),
-        "completed_ids": [],
+        "completed_ids": list(skip_ids),
         "status": "running"
     })
 
@@ -3957,9 +3959,9 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
             "from_number": from_number,
             "account_id": aid,
             "account_name": aname,
-            "started_at": time.time(),
+            "started_at": _started_at,
             "total": len(to_process),
-            "completed_ids": [c["id"] for c, _, _ in to_process[:i]],
+            "completed_ids": list(skip_ids) + [c["id"] for c, _, _ in to_process[:i]],
             "last_index": i,
             "status": "running"
         })
@@ -4272,8 +4274,8 @@ def _auto_resume_on_startup():
     try:
         time.sleep(8)  # חכה שהשרת יעלה לגמרי לפני בדיקה
         state = _load_resume_state()
-        if not state or state.get("status") != "running":
-            print("[AutoResume] אין ריצה לא גמורה לחידוש")
+        if not state or state.get("status") not in ("running",):
+            print("[AutoResume] אין ריצה לא גמורה לחידוש (סטטוס: {state.get('status') if state else 'none'})")
             return
 
         from_number = state.get("from_number", "")
@@ -4289,11 +4291,14 @@ def _auto_resume_on_startup():
             _clear_resume_state()
             return
 
-        # בדוק שהריצה לא ישנה מדי (24 שעות)
-        if time.time() - started_at > 86400:
-            print("[AutoResume] קובץ מצב ישן מדי (>24ש) - מדלג")
+        # בדוק שהריצה לא ישנה מדי (2 שעות - אם ישן מדי זה לופ אינסופי)
+        if time.time() - started_at > 7200:
+            print("[AutoResume] קובץ מצב ישן מדי (>2ש) - מדלג")
             _clear_resume_state()
             return
+
+        # מנע לופ - סמן את הקובץ כבר-בטיפול לפני הריצה
+        _save_resume_state({**state, "status": "resuming"})
 
         print(f"[AutoResume] מזוהה ריצה לא גמורה: {account_name} ({last_index}/{total})")
 
