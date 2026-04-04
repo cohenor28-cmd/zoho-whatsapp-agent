@@ -3946,7 +3946,15 @@ def _send_reply(reply: str, from_number: str, original_msg: str = ""):
     full_reply = quote + reply
     parts = split_message(full_reply)
     for i, part in enumerate(parts):
-        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
+        try:
+            twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
+        except Exception as twilio_err:
+            print(f"[_send_reply] Twilio error (part {i+1}/{len(parts)}): {twilio_err}")
+            time.sleep(2)  # המתן קצת לפני ניסיון הבא
+            try:
+                twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
+            except Exception as retry_err:
+                print(f"[_send_reply] Retry failed: {retry_err}")
         if i < len(parts) - 1:
             time.sleep(0.5)
 
