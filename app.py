@@ -1178,47 +1178,68 @@ def build_deposits_by_landlord(records: list) -> str:
     return "\n".join(lines)
 
 # ─── פקודות חדשות: עזרה, ביטול, חובות, סטטוס, חיפוש, דוח לקוח/בעל בית ──────────
-
 HELP_TEXT = ("""
-🤖 *תפריט פקודות*
+🤖 *עזרה - כל הפקודות*
 ────────────────────────────
-📋 *תפריט*
-  • תפריט → תפריט ראשי של כל הפקודות
+📋 *ניווט*
+  • תפריט → תפריט ממוספר של כל הפקודות
   • עזרה → הסבר מלא על כל פקודה
   • ביטול → ביטול פעולה פעילה
-🧾 *חשבוניות*
-  • חשבונית ['לקוח'] ['בעל בית'] ['מוצר'] → יצירת חשבונית
+🧧 *חשבוניות*
+  • חשבונית [לקוח] [בעל בית] [מוצר] → יצירת חשבונית
   • מחק חשבונית אחרונה → מחיקת חשבונית אחרונה
-  • מחק חשבונית אחרונה כפול → מחיקת 2 חשבוניות
-  • מחק חשבונית אחרונה משולש → מחיקת 3 חשבוניות
-  • חפש ['שם'] → חיפוש חשבוניות לפי שם לקוח
+  • מחק חשבונית אחרונה כפול / משולש → מחיקת 2/3 חשבוניות
+  • חפש [שם] → חיפוש חשבוניות לפי שם
 💰 *תשלומים*
-  • תשלום ['לקוח'] ['סכום'] ['שיטה'] → עדכון תשלום
+  • תשלום [לקוח] [סכום] [שיטה] → עדכון תשלום
 👤 *לקוחות*
-  • עדכון פספורט ['שם'] → חילוץ שם מפספורט ועדכון שם ויזה
-  • סטטוס ['שם'] → סטטוס מלא של לקוח
-  • דוח לקוח ['שם'] → כל חשבוניות ותשלומים של לקוח
-  • דוח בית ['שם'] → כל הלקוחות וחשבוניות של בעל בית
+  • סטטוס [שם] → סטטוס מלא של לקוח
+  • דוח לקוח [שם] → כל חשבוניות ותשלומים של לקוח
+  • דוח בית [שם] → כל הלקוחות וחשבוניות של בעל בית
+📎 *פספורטים*
+  • עדכון פספורט [שם] → חילוץ שם ויזה מפספורט קיים
+  • פספורט בית [בעל בית] → עדכון פספורטים לכל לקוחות בבית
+  • פספורט כללי → עדכון פספורטים לבעלי בתים לפי בחירה
+  • תמונה + "פספורט [שם]" → העלאה + עדכון שם ויזה אוטומטי
+📷 *פרופילים*
+  • תמונה + "פרופיל [שם]" → העלאה + מיקוד פנים + עדכון בזוהו
+  • פרופיל בית [בעל בית] → עדכון פרופיל לכל לקוחות בבית
+  • פרופיל כללי → עדכון פרופיל לבעלי בתים לפי בחירה
+  • תיקון פרופיל [שם] → בחר ידנית איזה תמונה להעלאה לפרופיל
+  • בדוק פרופיל בית [בעל בית] → סריקת פרופילים + בחירת מי לתיקון
 📊 *דוחות*
   • דוח יומי → תפריט דוחות
   • כל הדוחות → שליחת כל הדוחות בבת אחת
   • חובות פתוחים → כל החשבוניות שלא שולמו
 ────────────────────────────
-💡 טיפ: שלח *ביטול* לביטול פעולה פעילה בכל שלב
+💡 שלח *ביטול* לביטול פעולה פעילה בכל שלב
 """)
-
 MAIN_MENU_TEXT = ("""
 📋 *תפריט ראשי*
 ────────────────────────────
-1️⃣  חשבונית [לקוח] [בעל בית] [מוצר]
-2️⃣  תשלום [לקוח] [סכום] [שיטה]
-3️⃣  חפש [שם] – חיפוש חשבוניות
-4️⃣  סטטוס [שם] – סטטוס לקוח
-5️⃣  דוח לקוח [שם] – דוח מלא
-6️⃣  דוח בית [שם] – דוח בעל בית
-7️⃣  חובות פתוחים – כל החשבוניות שלא שולמו
-8️⃣  דוח יומי – תפריט דוחות
-9️⃣  כל הדוחות – שליחת כל הדוחות
+🧧 *חשבוניות*
+1. חשבונית [לקוח] [בעל בית] [מוצר]
+2. מחק חשבונית אחרונה
+3. חפש [שם]
+💰 *תשלומים*
+4. תשלום [לקוח] [סכום] [שיטה]
+👤 *לקוחות*
+5. סטטוס [שם]
+6. דוח לקוח [שם]
+7. דוח בית [שם]
+📎 *פספורטים*
+8. עדכון פספורט [שם]
+9. פספורט בית [בעל בית]
+10. פספורט כללי
+📷 *פרופילים*
+11. פרופיל בית [בעל בית]
+12. פרופיל כללי
+13. תיקון פרופיל [שם]
+14. בדוק פרופיל בית [בעל בית]
+📊 *דוחות*
+15. דוח יומי
+16. כל הדוחות
+17. חובות פתוחים
 ────────────────────────────
 💡 לפרטים נוספים כתוב *עזרה*
 """)
@@ -1227,26 +1248,34 @@ PAID_STATUSES = ["שולם מלא", "Paid", "paid"]
 UNPAID_STATUSES = ["לא שולם", "Unpaid", "unpaid"]
 
 def _word_search_contacts(name_query: str, per_page: int = 8):
-    """Search contacts using word search, then filter by smart exact-word logic."""
+    """Search contacts using word search, then filter by smart exact-word logic.
+    If Zoho returns no results, tries fuzzy search with difflib."""
     token, domain = get_access_token()
     headers = {"Authorization": f"Zoho-oauthtoken {token}"}
     r = requests.get(f"{domain}/crm/v5/Contacts/search", headers=headers,
                      params={"word": name_query, "per_page": per_page})
-    if r.status_code != 200:
-        return []
-    all_results = r.json().get("data", [])
-    return _smart_filter(all_results, name_query, "Full_Name")
+    if r.status_code == 200:
+        all_results = r.json().get("data", [])
+        filtered = _smart_filter(all_results, name_query, "Full_Name")
+        if filtered:
+            return filtered
+    # אם זוהו לא החזיר תוצאות - נסה חיפוש חכם עם difflib
+    return _fuzzy_search_contacts(name_query, per_page)
 
 def _word_search_accounts(name_query: str, per_page: int = 8):
-    """Search accounts using word search, then filter by smart exact-word logic."""
+    """Search accounts using word search, then filter by smart exact-word logic.
+    If Zoho returns no results, tries fuzzy search with difflib."""
     token, domain = get_access_token()
     headers = {"Authorization": f"Zoho-oauthtoken {token}"}
     r = requests.get(f"{domain}/crm/v5/Accounts/search", headers=headers,
                      params={"word": name_query, "per_page": per_page})
-    if r.status_code != 200:
-        return []
-    all_results = r.json().get("data", [])
-    return _smart_filter(all_results, name_query, "Account_Name")
+    if r.status_code == 200:
+        all_results = r.json().get("data", [])
+        filtered = _smart_filter(all_results, name_query, "Account_Name")
+        if filtered:
+            return filtered
+    # אם זוהו לא החזיר תוצאות - נסה חיפוש חכם עם difflib
+    return _fuzzy_search_accounts(name_query, per_page)
 
 def _smart_filter(results: list, query: str, name_field: str) -> list:
     """
@@ -1272,6 +1301,78 @@ def _smart_filter(results: list, query: str, name_field: str) -> list:
 
     # No exact match - return all results so user can choose
     return results
+
+def _fuzzy_search_contacts(name_query: str, per_page: int = 8) -> list:
+    """
+    חיפוש חכם לאנשי קשר עם difflib - מטפל בשגיאות כתיב בשמות עבריים.
+    מוריד את כל אנשי הקשר ומדרג לפי דמיון שם.
+    """
+    from difflib import SequenceMatcher
+    try:
+        token, domain = get_access_token()
+        headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+        # שלוף כמה מילים ראשונות מהשם לחיפוש רחב
+        words = name_query.strip().split()
+        candidates = []
+        seen_ids = set()
+        for word in words:
+            if len(word) < 2:
+                continue
+            r = requests.get(f"{domain}/crm/v5/Contacts/search", headers=headers,
+                             params={"word": word, "per_page": 20})
+            if r.status_code == 200:
+                for c in r.json().get("data", []):
+                    if c["id"] not in seen_ids:
+                        seen_ids.add(c["id"])
+                        candidates.append(c)
+        if not candidates:
+            return []
+        # דרג לפי דמיון שם
+        q = name_query.strip().lower()
+        def score(c):
+            name = (c.get("Full_Name") or "").lower()
+            return SequenceMatcher(None, q, name).ratio()
+        ranked = sorted(candidates, key=score, reverse=True)
+        # החזר רק אם דמיון >= 0.4
+        good = [c for c in ranked if SequenceMatcher(None, q, (c.get("Full_Name") or "").lower()).ratio() >= 0.4]
+        return good[:per_page] if good else ranked[:per_page]
+    except Exception as e:
+        print(f"_fuzzy_search_contacts error: {e}")
+        return []
+
+def _fuzzy_search_accounts(name_query: str, per_page: int = 8) -> list:
+    """
+    חיפוש חכם לבעלי בית עם difflib - מטפל בשגיאות כתיב בשמות עבריים.
+    """
+    from difflib import SequenceMatcher
+    try:
+        token, domain = get_access_token()
+        headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+        words = name_query.strip().split()
+        candidates = []
+        seen_ids = set()
+        for word in words:
+            if len(word) < 2:
+                continue
+            r = requests.get(f"{domain}/crm/v5/Accounts/search", headers=headers,
+                             params={"word": word, "per_page": 20})
+            if r.status_code == 200:
+                for a in r.json().get("data", []):
+                    if a["id"] not in seen_ids:
+                        seen_ids.add(a["id"])
+                        candidates.append(a)
+        if not candidates:
+            return []
+        q = name_query.strip().lower()
+        def score(a):
+            name = (a.get("Account_Name") or "").lower()
+            return SequenceMatcher(None, q, name).ratio()
+        ranked = sorted(candidates, key=score, reverse=True)
+        good = [a for a in ranked if SequenceMatcher(None, q, (a.get("Account_Name") or "").lower()).ratio() >= 0.4]
+        return good[:per_page] if good else ranked[:per_page]
+    except Exception as e:
+        print(f"_fuzzy_search_accounts error: {e}")
+        return []
 
 def _format_contact_choice_menu(contacts, action_label: str) -> str:
     """Format a numbered menu for contact selection"""
@@ -1506,12 +1607,14 @@ def update_passport_for_contact(contact: dict) -> str:
         return f"❌ לא נמצאו קבצים מצורפים עבור {contact_name}"
 
     # מיין: פספורט ראשון, אחר כך שאר הקבצים
-    def passport_priority(att):
+    # חלק לשתי רשימות: פספורט בשם, ושאר
+    def _is_passport_file(att):
         fname = att.get("File_Name", "").lower()
-        if "פספורט" in fname or "passport" in fname:
-            return 0
-        return 1
-    attachments_sorted = sorted(attachments, key=passport_priority)
+        return ("פספורט" in fname or "passport" in fname or "תעודה" in fname or "id" in fname or "visa" in fname)
+    passport_files = [a for a in attachments if _is_passport_file(a)]
+    other_files = [a for a in attachments if not _is_passport_file(a)]
+    # נסה קודם קבצי פספורט, ורק אם לא מצא - שאר הקבצים
+    attachments_sorted = passport_files + other_files
 
     # נסה לחלץ שם מכל קובץ עד שמצליח
     for att in attachments_sorted:
@@ -1539,7 +1642,7 @@ def update_passport_for_contact(contact: dict) -> str:
             "contents": [{
                 "parts": [
                     {"inline_data": {"mime_type": mime, "data": img_b64}},
-                    {"text": "This is a passport or ID document. Extract ONLY the full English name of the person (given name + surname as written in the passport). Return ONLY the name in UPPERCASE, nothing else. Format: FIRSTNAME LASTNAME"}
+                    {"text": "Look at this image. If it is a passport or official ID document, extract ONLY the full English name (given name + surname as printed). Return ONLY the name in UPPERCASE, nothing else. Format: FIRSTNAME LASTNAME. If the image is NOT a passport or official ID document (e.g. it is a photo of a person, a selfie, a document in a different language without Latin name, or any other non-ID image), return exactly the word: NONE"}
                 ]
             }],
             "generationConfig": {"temperature": 0}
@@ -1551,7 +1654,10 @@ def update_passport_for_contact(contact: dict) -> str:
                 # ניקוי - רק אותיות לטיניות ורווחים
                 import re as _re
                 extracted_clean = _re.sub(r'[^A-Za-z\s]', '', extracted).strip().upper()
-                if extracted_clean and len(extracted_clean) > 3:
+                _refusal_words = {"SORRY", "CANNOT", "UNABLE", "DOCUMENT", "IMAGE", "PASSPORT", "REQUEST", "EXTRACT", "PROVIDED", "THEREFORE", "FULFILL", "PHOTOGRAPH", "PERSON", "LOCATED", "NONE"}
+                word_count = len(extracted_clean.split())
+                has_refusal = any(w in extracted_clean.split() for w in _refusal_words)
+                if extracted_clean and 1 <= word_count <= 4 and len(extracted_clean) <= 50 and not has_refusal:
                     # עדכן שדה Visa_Name1
                     upd = requests.put(f"{domain}/crm/v2/Contacts",
                                        headers={**headers_z, "Content-Type": "application/json"},
@@ -1583,6 +1689,272 @@ def handle_command(message, from_number):
                 return update_passport_for_contact(contacts[idx])
         return f"❓ כתוב מספר בין 1 ל-{len(contacts)}"
 
+    # === בחירת לקוח להעלאת פרופיל מתמונה ===
+    if pending == "choose_contact_profile_upload":
+        contacts = session.get("contacts", [])
+        media_url = session.get("media_url", "")
+        media_type = session.get("media_type", "image/jpeg")
+        choice = message.strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(contacts):
+                sessions.pop(from_number, None)
+                return _do_profile_upload(contacts[idx], media_url, media_type)
+        return f"❓ כתוב מספר בין 1 ל-{len(contacts)}"
+
+    # === בחירת בעל בית לעדכון פרופילים במאסס ===
+    if pending == "choose_account_bulk_profile":
+        accounts = session.get("accounts", [])
+        choice = message.strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(accounts):
+                sessions.pop(from_number, None)
+                aname = accounts[idx].get("Account_Name", "")
+                sessions[from_number] = {"pending": "confirm_bulk_profile", "account": accounts[idx]}
+                return (f"🔍 תעדכן פרופילים לכל לקוחות בית *{aname}*\n"
+                        f"התהליך מחפש קובץ 'פרופיל' בקבצים ומעדכן תמונת פרופיל.\n"
+                        f"האם להתחיל?\n1. כן\n2. לא")
+        return f"❓ כתוב מספר בין 1 ל-{len(accounts)}"
+
+    # === אישור עדכון פרופילים במאסס ===
+    if pending == "confirm_bulk_profile":
+        account = session.get("account", {})
+        choice = message.strip()
+        if choice in ["1", "כן"]:
+            sessions.pop(from_number, None)
+            def _run_bulk_profile():
+                result, used_att_ids = bulk_profile_update_for_account(account, from_number)
+                # שמור את ה-attachment IDs ששימשו כדי שהתיקון ידלג עליהם
+                sessions[from_number] = {
+                    "pending": "after_bulk_profile",
+                    "account": account,
+                    "used_att_ids": used_att_ids
+                }
+                _send_reply(result, from_number)
+            threading.Thread(target=_run_bulk_profile, daemon=True).start()
+            aname = account.get("Account_Name", "")
+            return f"⏳ מתחיל עדכון פרופילים - *{aname}*... תקבל עדכון בסיום."
+        elif choice in ["2", "לא"]:
+            sessions.pop(from_number, None)
+            return "❌ בוטל"
+        return "❓ כתוב 1 (כן) או 2 (לא)"
+
+    # === בדיקת פרופילים - בחירת מספרים לתיקון ===
+    if pending == "review_profile_beit":
+        account = session.get("account", {})
+        contacts_data = session.get("contacts_data", [])  # [(contact, has_photo, atts)]
+        choice = message.strip()
+        if choice in ["0", "סיום", "יציאה", "ביטול"]:
+            sessions.pop(from_number, None)
+            return "✅ סיום בדיקת פרופילים."
+        # Parse comma/space separated numbers
+        import re as _re
+        nums = [int(x) for x in _re.findall(r"\d+", choice) if 1 <= int(x) <= len(contacts_data)]
+        if not nums:
+            return f"❓ שלח מספרים בין 1 ל-{len(contacts_data)} מופרדים בפסיקים (או 0 לסיום)"
+        sessions.pop(from_number, None)
+        used_att_ids = session.get("used_att_ids", {})
+        to_fix = [(contacts_data[n-1][0], contacts_data[n-1][2]) for n in nums]
+        def _run_fix_profiles():
+            result, new_used = _fix_profiles_from_next_attachment(to_fix, account, from_number, used_att_ids)
+            # עדכן את ה-used_att_ids עם הנוכחיים
+            merged = {**used_att_ids, **new_used}
+            sessions[from_number] = {
+                "pending": "review_profile_beit",
+                "account": account,
+                "contacts_data": contacts_data,
+                "used_att_ids": merged
+            }
+            _send_reply(result, from_number)
+            _send_reply("שלח מספרים נוספים לתיקון, או 0 לסיום.", from_number)
+        threading.Thread(target=_run_fix_profiles, daemon=True).start()
+        names = ", ".join(contacts_data[n-1][0].get("Full_Name","") for n in nums)
+        return f"⏳ מתחיל תיקון פרופילים: {names}..."
+
+
+    # === בחירת לקוח להעלאת פספורט מתמונה ===
+    if pending == "choose_contact_passport_upload":
+        contacts = session.get("contacts", [])
+        media_url = session.get("media_url", "")
+        media_type = session.get("media_type", "image/jpeg")
+        choice = message.strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(contacts):
+                sessions.pop(from_number, None)
+                return _do_passport_upload_and_update(contacts[idx], media_url, media_type)
+        return f"❓ כתוב מספר בין 1 ל-{len(contacts)}"
+
+    # === תיקון פרופיל - בחירת לקוח ===
+    if pending == "choose_contact_fix_profile":
+        contacts = session.get("contacts", [])
+        choice = message.strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(contacts):
+                contact = contacts[idx]
+                cid = contact["id"]
+                cname = contact.get("Full_Name", "")
+                sessions.pop(from_number, None)
+                # טען קבצים
+                def _load_atts_fix():
+                    try:
+                        token2, domain2 = get_access_token()
+                        h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
+                        r = requests.get(f"{domain2}/crm/v2/Contacts/{cid}/Attachments", headers=h2)
+                        atts = r.json().get("data", []) if r.status_code == 200 else []
+                        img_exts = ('.jpg','.jpeg','.png','.webp','.heic','.heif')
+                        image_atts = [a for a in atts if a.get("File_Name","").lower().endswith(img_exts)]
+                        if not image_atts:
+                            _send_reply(f"❌ אין תמונות בקבצים של {cname}", from_number)
+                            return
+                        # טען שאר לקוחות מאותו בית
+                        acc_info = contact.get("Account_Name", {})
+                        acc_id = acc_info.get("id", "") if isinstance(acc_info, dict) else ""
+                        acc_name = acc_info.get("name", "") if isinstance(acc_info, dict) else ""
+                        account_contacts = []
+                        if acc_id:
+                            rc = requests.get(f"{domain2}/crm/v2/Contacts/search",
+                                headers=h2,
+                                params={"criteria": f"(Account_Name:equals:{acc_id})", "fields": "Full_Name,id", "per_page": 200})
+                            if rc.status_code == 200:
+                                account_contacts = rc.json().get("data", [])
+                        lines = [f"📋 *תמונות של {cname}:*"]
+                        for j, a in enumerate(image_atts, 1):
+                            lines.append(f"{j}. {a.get('File_Name','')}")
+                        lines.append("\nשלח מספר לבחירה (0 = ביטול)")
+                        sessions[from_number] = {
+                            "pending": "pick_attachment_fix_profile",
+                            "contact": contact,
+                            "image_atts": image_atts,
+                            "account_contacts": account_contacts,
+                            "account_name": acc_name
+                        }
+                        _send_reply("\n".join(lines), from_number)
+                    except Exception as e:
+                        _send_reply(f"❌ שגיאה בטעינת קבצים: {e}", from_number)
+                threading.Thread(target=_load_atts_fix, daemon=True).start()
+                return f"⏳ טוען קבצים של {cname}..."
+        return f"❓ כתוב מספר בין 1 ל-{len(contacts)}"
+
+    # === תיקון פרופיל - בחירת קובץ ===
+    if pending == "pick_attachment_fix_profile":
+        contact = session.get("contact", {})
+        image_atts = session.get("image_atts", [])
+        account_contacts = session.get("account_contacts", [])  # שאר לקוחות באותו בית
+        account_name = session.get("account_name", "")
+        cname = contact.get("Full_Name", "")
+        cid = contact["id"]
+        choice = message.strip()
+        if choice == "0":
+            sessions.pop(from_number, None)
+            return "❌ בוטל"
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(image_atts):
+                att = image_atts[idx]
+                sessions.pop(from_number, None)
+                def _do_fix_profile():
+                    try:
+                        token2, domain2 = get_access_token()
+                        h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
+                        r2 = requests.get(f"{domain2}/crm/v2/Contacts/{cid}/Attachments/{att['id']}", headers=h2)
+                        if r2.status_code != 200:
+                            _send_reply(f"❌ לא הצלחתי להוריד {att['File_Name']}", from_number)
+                            return
+                        face_bytes, face_dbg = _crop_face_center(r2.content)
+                        if not face_bytes:
+                            _send_reply(f"⚠️ חיתוך פנים נכשל: {face_dbg[:80]}", from_number)
+                            return
+                        photo_resp = requests.post(
+                            f"{domain2}/crm/v2/Contacts/{cid}/photo",
+                            headers=h2,
+                            files={"file": ("profile.jpg", face_bytes, "image/jpeg")}
+                        )
+                        if photo_resp.status_code in [200, 201, 202]:
+                            _send_reply(f"✅ תמונת פרופיל של {cname} עודכנה מ: {att['File_Name']}", from_number)
+                            # אם יש שאר לקוחות באותו בית - הצג תפריט
+                            others = [c for c in account_contacts if c["id"] != cid]
+                            if others:
+                                lines = [f"🏠 *שאר לקוחות של {account_name}:*"]
+                                for j, c in enumerate(others, 1):
+                                    lines.append(f"{j}. {c.get('Full_Name','')}")
+                                lines.append("\nשלח מספר לתיקון פרופיל, או 0 לסיום")
+                                sessions[from_number] = {
+                                    "pending": "choose_next_fix_profile",
+                                    "contacts": others,
+                                    "account_contacts": account_contacts,
+                                    "account_name": account_name
+                                }
+                                _send_reply("\n".join(lines), from_number)
+                        else:
+                            _send_reply(f"❌ שגיאה בעדכון פרופיל ({photo_resp.status_code})", from_number)
+                    except Exception as e:
+                        _send_reply(f"❌ שגיאה: {str(e)[:80]}", from_number)
+                threading.Thread(target=_do_fix_profile, daemon=True).start()
+                return f"⏳ מעדכן פרופיל של {cname} מ: {att['File_Name']}..."
+        return f"❓ כתוב מספר בין 1 ל-{len(image_atts)}"
+
+    # === תיקון פרופיל - בחירת לקוח הבא מאותו בית ===
+    if pending == "choose_next_fix_profile":
+        contacts = session.get("contacts", [])
+        account_contacts = session.get("account_contacts", [])
+        account_name = session.get("account_name", "")
+        choice = message.strip()
+        if choice == "0":
+            sessions.pop(from_number, None)
+            return "✅ סיום"
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(contacts):
+                contact = contacts[idx]
+                cid = contact["id"]
+                cname = contact.get("Full_Name", "")
+                sessions.pop(from_number, None)
+                def _load_atts_next():
+                    try:
+                        token2, domain2 = get_access_token()
+                        h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
+                        r = requests.get(f"{domain2}/crm/v2/Contacts/{cid}/Attachments", headers=h2)
+                        atts = r.json().get("data", []) if r.status_code == 200 else []
+                        img_exts = ('.jpg','.jpeg','.png','.webp','.heic','.heif')
+                        image_atts = [a for a in atts if a.get("File_Name","").lower().endswith(img_exts)]
+                        if not image_atts:
+                            _send_reply(f"❌ אין תמונות בקבצים של {cname}", from_number)
+                            # הצג שאר לקוחות
+                            others = [c for c in account_contacts if c["id"] != cid]
+                            if others:
+                                lines = [f"🏠 *שאר לקוחות של {account_name}:*"]
+                                for j, c in enumerate(others, 1):
+                                    lines.append(f"{j}. {c.get('Full_Name','')}")
+                                lines.append("\nשלח מספר לתיקון פרופיל, או 0 לסיום")
+                                sessions[from_number] = {
+                                    "pending": "choose_next_fix_profile",
+                                    "contacts": others,
+                                    "account_contacts": account_contacts,
+                                    "account_name": account_name
+                                }
+                                _send_reply("\n".join(lines), from_number)
+                            return
+                        lines = [f"📋 *תמונות של {cname}:*"]
+                        for j, a in enumerate(image_atts, 1):
+                            lines.append(f"{j}. {a.get('File_Name','')}")
+                        lines.append("\nשלח מספר לבחירה (0 = ביטול)")
+                        sessions[from_number] = {
+                            "pending": "pick_attachment_fix_profile",
+                            "contact": contact,
+                            "image_atts": image_atts,
+                            "account_contacts": account_contacts,
+                            "account_name": account_name
+                        }
+                        _send_reply("\n".join(lines), from_number)
+                    except Exception as e:
+                        _send_reply(f"❌ שגיאה: {e}", from_number)
+                threading.Thread(target=_load_atts_next, daemon=True).start()
+                return f"⏳ טוען קבצים של {cname}..."
+        return f"❓ כתוב מספר בין 1 ל-{len(contacts)}, או 0 לסיום"
+
     # === בחירת לקוח מתוצאות חיפוש ===
     if pending == "choose_contact_status":
         contacts = session.get("contacts", [])
@@ -1606,6 +1978,40 @@ def handle_command(message, from_number):
                 sessions.pop(from_number, None)
                 return build_landlord_report(name_q, account=accounts[idx])
         return f"❓ כתוב מספר בין 1 ל-{len(accounts)}"
+
+    # === בחירת בעל בית לעדכון פספורטות במאסס ===
+    if pending == "choose_account_bulk_passport":
+        accounts = session.get("accounts", [])
+        choice = message.strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(accounts):
+                sessions.pop(from_number, None)
+                # שלח אישור ראשון
+                aname = accounts[idx].get("Account_Name", "")
+                sessions[from_number] = {"pending": "confirm_bulk_passport", "account": accounts[idx]}
+                return (f"🔍 תעדכן פספורטים לכל לקוחות בית *{aname}*\n"
+                        f"התהליך עובר על כל לקוח שאין לו שם ויזה ומחפש פספורט בקבצים.\n"
+                        f"האם להתחיל?\n1. כן\n2. לא")
+        return f"❓ כתוב מספר בין 1 ל-{len(accounts)}"
+
+    # === אישור עדכון פספורטות במאסס ===
+    if pending == "confirm_bulk_passport":
+        account = session.get("account", {})
+        choice = message.strip()
+        if choice in ["1", "כן"]:
+            sessions.pop(from_number, None)
+            # הרץ בתהליך רקע ושלח עדכונים
+            def _run_bulk():
+                result = bulk_passport_update_for_account(account, from_number)
+                _send_reply(result, from_number)
+            threading.Thread(target=_run_bulk, daemon=True).start()
+            aname = account.get("Account_Name", "")
+            return f"⏳ מתחיל עדכון פספורטים - *{aname}*... תקבל עדכון בסיום."
+        elif choice in ["2", "לא"]:
+            sessions.pop(from_number, None)
+            return "❌ בוטל"
+        return "❓ כתוב 1 (כן) או 2 (לא)"
 
     # === דוח יומי - תפריט הפקדות משני ===
     if pending == "deposits_detail_menu":
@@ -1772,13 +2178,351 @@ def handle_command(message, from_number):
         if name_q:
             contacts = _word_search_contacts(name_q)
             if not contacts:
-                return f"❓ לא מצאתי לקוח בשם *{name_q}*"
+                # נסה חיפוש רחב יותר - כל מילה בנפרד
+                for word in name_q.split():
+                    if len(word) >= 2:
+                        contacts = _word_search_contacts(word, per_page=15)
+                        if contacts:
+                            break
+            if not contacts:
+                return f"❓ לא מצאתי לקוח בשם *{name_q}* - נסה שם קצר יותר"
             if len(contacts) == 1:
                 sessions.pop(from_number, None)
                 return update_passport_for_contact(contacts[0])
             # כמה לקוחות - הצג תפריט בחירה
             sessions[from_number] = {"pending": "choose_contact_passport", "contacts": contacts, "name_q": name_q}
             return _format_contact_choice_menu(contacts, "עדכון פספורט")
+
+    # === תיקון פרופיל [שם לקוח] ===
+    if msg_s.startswith("תיקון פרופיל "):
+        name_q = msg_s[len("תיקון פרופיל "):].strip()
+        if name_q:
+            contacts = _word_search_contacts(name_q)
+            if not contacts:
+                for word in name_q.split():
+                    if len(word) >= 2:
+                        contacts = _word_search_contacts(word)
+                        if contacts: break
+            if not contacts:
+                return f"❓ לא מצאתי לקוח בשם *{name_q}*"
+            if len(contacts) == 1:
+                contact = contacts[0]
+                cid = contact["id"]
+                cname = contact.get("Full_Name", "")
+                sessions.pop(from_number, None)
+                def _load_atts_fix_direct():
+                    try:
+                        token2, domain2 = get_access_token()
+                        h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
+                        # טען קבצים של הלקוח
+                        r = requests.get(f"{domain2}/crm/v2/Contacts/{cid}/Attachments", headers=h2)
+                        atts = r.json().get("data", []) if r.status_code == 200 else []
+                        img_exts = ('.jpg','.jpeg','.png','.webp','.heic','.heif')
+                        image_atts = [a for a in atts if a.get("File_Name","").lower().endswith(img_exts)]
+                        if not image_atts:
+                            _send_reply(f"❌ אין תמונות בקבצים של {cname}", from_number)
+                            return
+                        # טען שאר לקוחות מאותו בית
+                        acc_info = contact.get("Account_Name", {})
+                        acc_id = acc_info.get("id", "") if isinstance(acc_info, dict) else ""
+                        acc_name = acc_info.get("name", "") if isinstance(acc_info, dict) else ""
+                        account_contacts = []
+                        if acc_id:
+                            rc = requests.get(f"{domain2}/crm/v2/Contacts/search",
+                                headers=h2,
+                                params={"criteria": f"(Account_Name:equals:{acc_id})", "fields": "Full_Name,id", "per_page": 200})
+                            if rc.status_code == 200:
+                                account_contacts = rc.json().get("data", [])
+                        lines = [f"📋 *תמונות של {cname}:*"]
+                        for j, a in enumerate(image_atts, 1):
+                            lines.append(f"{j}. {a.get('File_Name','')}")
+                        lines.append("\nשלח מספר לבחירה (0 = ביטול)")
+                        sessions[from_number] = {
+                            "pending": "pick_attachment_fix_profile",
+                            "contact": contact,
+                            "image_atts": image_atts,
+                            "account_contacts": account_contacts,
+                            "account_name": acc_name
+                        }
+                        _send_reply("\n".join(lines), from_number)
+                    except Exception as e:
+                        _send_reply(f"❌ שגיאה: {e}", from_number)
+                threading.Thread(target=_load_atts_fix_direct, daemon=True).start()
+                return f"⏳ טוען קבצים של {cname}..."
+            # כמה לקוחות - הצג תפריט בחירה
+            sessions[from_number] = {"pending": "choose_contact_fix_profile", "contacts": contacts}
+            return _format_contact_choice_menu(contacts, "תיקון פרופיל")
+
+    # === פרופיל בית - כל לקוחות בבית ===
+    if msg_s.startswith("פרופיל בית "):
+        name_q = msg_s[len("פרופיל בית "):].strip()
+        if name_q:
+            accounts = _word_search_accounts(name_q)
+            if not accounts:
+                # נסה כל מילה בנפרד
+                for word in name_q.split():
+                    if len(word) >= 2:
+                        accounts = _word_search_accounts(word)
+                        if accounts: break
+            if not accounts:
+                return f"❓ לא מצאתי בעל בית בשם *{name_q}*"
+            if len(accounts) == 1:
+                aname = accounts[0].get("Account_Name", "")
+                sessions[from_number] = {"pending": "confirm_bulk_profile", "account": accounts[0]}
+                return (f"🔍 תעדכן פרופילים לכל לקוחות בית *{aname}*\n"
+                        f"התהליך מחפש קובץ 'פרופיל' בקבצים ומעדכן תמונת פרופיל.\n"
+                        f"האם להתחיל?\n1. כן\n2. לא")
+            sessions[from_number] = {"pending": "choose_account_bulk_profile", "accounts": accounts, "name_q": name_q}
+            return _format_account_choice_menu(accounts, "עדכון פרופילים")
+
+    # === בחירת בית לבדיקת פרופילים ===
+    if pending == "choose_account_check_profile":
+        accounts = session.get("accounts", [])
+        choice = message.strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(accounts):
+                sessions.pop(from_number, None)
+                aname = accounts[idx].get("Account_Name", "")
+                sessions[from_number] = {"pending": "confirm_check_profile_beit", "account": accounts[idx]}
+                return (f"🔍 בדיקת פרופילים לכל לקוחות בית *{aname}*\n"
+                        f"האם להתחיל?\n1. כן\n2. לא")
+        return f"❓ כתוב מספר בין 1 ל-{len(accounts)}"
+
+    # === אישור בדיקת פרופילים ===
+    if pending == "confirm_check_profile_beit":
+        account = session.get("account", {})
+        choice = message.strip()
+        if choice in ["1", "כן"]:
+            sessions.pop(from_number, None)
+            def _run_check_profiles():
+                result_msg, contacts_data = _scan_profiles_for_account(account)
+                if contacts_data:
+                    sessions[from_number] = {
+                        "pending": "review_profile_beit",
+                        "account": account,
+                        "contacts_data": contacts_data
+                    }
+                _send_reply(result_msg, from_number)
+            threading.Thread(target=_run_check_profiles, daemon=True).start()
+            aname = account.get("Account_Name", "")
+            return f"⏳ סורק פרופילים - *{aname}*... תקבל עדכון בסיום."
+        elif choice in ["2", "לא"]:
+            sessions.pop(from_number, None)
+            return "❌ בוטל"
+        return "❓ כתוב 1 (כן) או 2 (לא)"
+
+
+
+    # === בדוק פרופיל בית - סקירה ובחירת מי לתקן ===
+    if msg_s.startswith("בדוק פרופיל בית "):
+        name_q = msg_s[len("בדוק פרופיל בית "):].strip()
+        if name_q:
+            accounts = _word_search_accounts(name_q)
+            if not accounts:
+                for word in name_q.split():
+                    if len(word) >= 2:
+                        accounts = _word_search_accounts(word)
+                        if accounts: break
+            if not accounts:
+                return f"❓ לא מצאתי בעל בית בשם *{name_q}*"
+            if len(accounts) == 1:
+                aname = accounts[0].get("Account_Name", "")
+                sessions[from_number] = {"pending": "confirm_check_profile_beit", "account": accounts[0]}
+                return (f"🔍 בדיקת פרופילים לכל לקוחות בית *{aname}*\n"
+                        f"הבוט יסרוק את כל הלקוחות ויראה מי יש לו תמונה ומי לא.\n"
+                        f"האם להתחיל?\n1. כן\n2. לא")
+            sessions[from_number] = {"pending": "choose_account_check_profile", "accounts": accounts, "name_q": name_q}
+            return _format_account_choice_menu(accounts, "בדיקת פרופילים")
+
+    # === פרופיל כללי - בחירת בעלי בתים לעדכון ===
+    if msg_s == "פרופיל כללי":
+        sessions.pop(from_number, None)
+        def _load_all_accounts_for_profile():
+            try:
+                token2, domain2 = get_access_token()
+                h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
+                all_accs = []
+                page = 1
+                while True:
+                    r = requests.get(f"{domain2}/crm/v5/Accounts",
+                        headers=h2,
+                        params={"fields": "Account_Name", "per_page": 200, "page": page})
+                    if r.status_code != 200: break
+                    batch = r.json().get("data", [])
+                    if not batch: break
+                    all_accs.extend(batch)
+                    info = r.json().get("info", {})
+                    if not info.get("more_records", False): break
+                    page += 1
+                if not all_accs:
+                    _send_reply("❌ לא נמצאו בעלי בתים", from_number)
+                    return
+                # מיין לפי שם
+                all_accs.sort(key=lambda a: a.get("Account_Name", ""))
+                sessions[from_number] = {
+                    "pending": "pick_accounts_general_profile",
+                    "accounts": all_accs
+                }
+                # בנה שורות ופצל להודעות של עד 1500 תווים
+                all_lines = [f"{j}. {a.get('Account_Name','')}" for j, a in enumerate(all_accs, 1)]
+                footer = "\nשלח מספרים מופרדים בפסיקות (1,3,5) או 'הכל' לבחירת הכל, או 0 לביטול"
+                MAX_CHARS = 1400
+                chunks = []
+                current_chunk = ["🏠 *בחר בעלי בתים לעדכון פרופיל:*"]
+                current_len = len(current_chunk[0])
+                for line in all_lines:
+                    if current_len + len(line) + 1 > MAX_CHARS:
+                        chunks.append("\n".join(current_chunk))
+                        current_chunk = []
+                        current_len = 0
+                    current_chunk.append(line)
+                    current_len += len(line) + 1
+                if current_chunk:
+                    chunks.append("\n".join(current_chunk))
+                # שלח כל חלק בנפרד
+                for i, chunk in enumerate(chunks):
+                    if i == len(chunks) - 1:
+                        _send_reply(chunk + footer, from_number)
+                    else:
+                        _send_reply(chunk, from_number)
+            except Exception as e:
+                _send_reply(f"❌ שגיאה: {e}", from_number)
+        threading.Thread(target=_load_all_accounts_for_profile, daemon=True).start()
+        return "⏳ טוען רשימת בעלי בתים..."
+
+    # === פרופיל כללי - בחירת בעלי בתים ===
+    if pending == "pick_accounts_general_profile":
+        accounts_list = session.get("accounts", [])
+        choice = message.strip()
+        if choice == "0":
+            sessions.pop(from_number, None)
+            return "❌ בוטל"
+        # פרס מספרים
+        import re as _re
+        if choice.strip() == "הכל":
+            nums = list(range(1, len(accounts_list) + 1))
+        else:
+            nums = [int(x) for x in _re.findall(r'\d+', choice) if 1 <= int(x) <= len(accounts_list)]
+        if not nums:
+            return f"❓ שלח מספרים בין 1 ל-{len(accounts_list)}, או 0 לביטול"
+        chosen = [accounts_list[i-1] for i in nums]
+        sessions.pop(from_number, None)
+        names = ", ".join(a.get("Account_Name","") for a in chosen)
+        def _run_general_profile():
+            try:
+                total_updated = 0
+                total_skipped = 0
+                for acc in chosen:
+                    aname = acc.get("Account_Name", "")
+                    _send_reply(f"⏳ מעדכן פרופילים - *{aname}*...", from_number)
+                    result = bulk_profile_update_for_account(acc, from_number)
+                    _send_reply(result, from_number)
+                _send_reply(f"✅ *סיום פרופיל כללי*\nעודכנו {len(chosen)} בעלי בתים: {names}", from_number)
+            except Exception as e:
+                _send_reply(f"❌ שגיאה: {e}", from_number)
+        threading.Thread(target=_run_general_profile, daemon=True).start()
+        return f"⏳ מתחיל עדכון פרופילים ל-{len(chosen)} בעלי בתים..."
+
+    # === פספורט כללי - בחירת בעלי בתים לעדכון ===
+    if msg_s == "פספורט כללי":
+        sessions.pop(from_number, None)
+        def _load_all_accounts_for_passport():
+            try:
+                token2, domain2 = get_access_token()
+                h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
+                all_accs = []
+                page = 1
+                while True:
+                    r = requests.get(f"{domain2}/crm/v5/Accounts",
+                        headers=h2,
+                        params={"fields": "Account_Name", "per_page": 200, "page": page})
+                    if r.status_code != 200: break
+                    batch = r.json().get("data", [])
+                    if not batch: break
+                    all_accs.extend(batch)
+                    info = r.json().get("info", {})
+                    if not info.get("more_records", False): break
+                    page += 1
+                if not all_accs:
+                    _send_reply("❌ לא נמצאו בעלי בתים", from_number)
+                    return
+                all_accs.sort(key=lambda a: a.get("Account_Name", ""))
+                sessions[from_number] = {
+                    "pending": "pick_accounts_general_passport",
+                    "accounts": all_accs
+                }
+                all_lines = [f"{j}. {a.get('Account_Name','')}" for j, a in enumerate(all_accs, 1)]
+                footer = "\nשלח מספרים מופרדים בפסיקות (1,3,5) או 'הכל' לבחירת הכל, או 0 לביטול"
+                MAX_CHARS = 1400
+                chunks = []
+                current_chunk = ["📎 *בחר בעלי בתים לעדכון פספורט:*"]
+                current_len = len(current_chunk[0])
+                for line in all_lines:
+                    if current_len + len(line) + 1 > MAX_CHARS:
+                        chunks.append("\n".join(current_chunk))
+                        current_chunk = []
+                        current_len = 0
+                    current_chunk.append(line)
+                    current_len += len(line) + 1
+                if current_chunk:
+                    chunks.append("\n".join(current_chunk))
+                for i, chunk in enumerate(chunks):
+                    if i == len(chunks) - 1:
+                        _send_reply(chunk + footer, from_number)
+                    else:
+                        _send_reply(chunk, from_number)
+            except Exception as e:
+                _send_reply(f"❌ שגיאה: {e}", from_number)
+        threading.Thread(target=_load_all_accounts_for_passport, daemon=True).start()
+        return "⏳ טוען רשימת בעלי בתים..."
+
+    # === פספורט כללי - בחירת בעלי בתים ===
+    if pending == "pick_accounts_general_passport":
+        accounts_list = session.get("accounts", [])
+        choice = message.strip()
+        if choice == "0":
+            sessions.pop(from_number, None)
+            return "❌ בוטל"
+        import re as _re2
+        if choice.strip() == "הכל":
+            nums = list(range(1, len(accounts_list) + 1))
+        else:
+            nums = [int(x) for x in _re2.findall(r'\d+', choice) if 1 <= int(x) <= len(accounts_list)]
+        if not nums:
+            return f"❓ שלח מספרים בין 1 ל-{len(accounts_list)}, או 0 לביטול"
+        chosen = [accounts_list[i-1] for i in nums]
+        sessions.pop(from_number, None)
+        names = ", ".join(a.get("Account_Name","") for a in chosen)
+        def _run_general_passport():
+            try:
+                for acc in chosen:
+                    aname = acc.get("Account_Name", "")
+                    _send_reply(f"⏳ מעדכן פספורטים - *{aname}*...", from_number)
+                    result = bulk_passport_update_for_account(acc, from_number)
+                    _send_reply(result, from_number)
+                _send_reply(f"✅ *סיום פספורט כללי*\nעודכנו {len(chosen)} בעלי בתים: {names}", from_number)
+            except Exception as e:
+                _send_reply(f"❌ שגיאה: {e}", from_number)
+        threading.Thread(target=_run_general_passport, daemon=True).start()
+        return f"⏳ מתחיל עדכון פספורטים ל-{len(chosen)} בעלי בתים..."
+
+    # === עדכון פספורט בית - כל לקוחות בבית ===
+    if msg_s.startswith("פספורט בית ") or msg_s.startswith("עדכון פספורט בית "):
+        prefix = "פספורט בית " if msg_s.startswith("פספורט בית ") else "עדכון פספורט בית "
+        name_q = msg_s[len(prefix):].strip()
+        if name_q:
+            accounts = _word_search_accounts(name_q)
+            if not accounts:
+                return f"❓ לא מצאתי בעל בית בשם *{name_q}*"
+            if len(accounts) == 1:
+                aname = accounts[0].get("Account_Name", "")
+                sessions[from_number] = {"pending": "confirm_bulk_passport", "account": accounts[0]}
+                return (f"🔍 תעדכן פספורטים לכל לקוחות בית *{aname}*\n"
+                        f"התהליך עובר על כל לקוח שאין לו שם ויזה ומחפש פספורט בקבצים.\n"
+                        f"האם להתחיל?\n1. כן\n2. לא")
+            sessions[from_number] = {"pending": "choose_account_bulk_passport", "accounts": accounts, "name_q": name_q}
+            return _format_account_choice_menu(accounts, "עדכון פספורטים")
 
     # === סטטוס לקוח ===
     if msg_s.startswith("סטטוס "):
@@ -2353,13 +3097,934 @@ def handle_command(message, from_number):
             "• 'טונגצאי בוי שער דוד שילם 120 מזומן' - תשלום\n"
             "• 'קווים פעילים אילן' - בדיקת קווים")
 
+def bulk_passport_update_for_account(account: dict, from_number: str) -> str:
+    """
+    עובר על כל לקוחות של בעל בית שאין להם שם ויזה,
+    מחפש פספורט בקבצים ומעדכן Visa_Name1.
+    משלח עדכוני ביניים בוואטסאפ ומחזיר סיכום סופי.
+    """
+    aid = account["id"]
+    aname = account.get("Account_Name", "")
+    token, domain = get_access_token()
+    headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+
+    # שלוף כל לקוחות בבית
+    all_contacts = []
+    page = 1
+    while True:
+        batch, info = zoho_get_full("Contacts/search", {
+            "criteria": f"(Account_Name:equals:{aid})",
+            "fields": "Full_Name,Visa_Name1,id",
+            "per_page": 200,
+            "page": page
+        })
+        if not batch:
+            break
+        all_contacts.extend(batch)
+        if not info.get("more_records", False):
+            break
+        page += 1
+
+    if not all_contacts:
+        return f"❌ לא נמצאו לקוחות בבית *{aname}*"
+
+    # סנן: רק לקוחות שאין להם שם ויזה
+    missing = [c for c in all_contacts if not (c.get("Visa_Name1") or "").strip()]
+    already = len(all_contacts) - len(missing)
+
+    if not missing:
+        return (f"✅ כל {len(all_contacts)} לקוחות בבית *{aname}* כבר יש להם שם ויזה!")
+
+    # שלח עדכון ראשון
+    _send_reply(
+        f"🔍 מתחיל עיבוד {len(missing)} לקוחות - *{aname}*\n"
+        f"({already} כבר יש שם ויזה, מדלגים)",
+        from_number
+    )
+
+    updated = []
+    skipped = []
+    failed = []
+
+    for contact in missing:
+        cname = contact.get("Full_Name", "")
+        cid = contact["id"]
+
+        # שלוף קבצים מצורפים
+        r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z)
+        if r.status_code != 200 or not r.json().get("data"):
+            skipped.append(f"⏩ {cname} - אין קבצים")
+            continue
+
+        attachments = r.json()["data"]
+
+        # חלק לשתי רשימות: פספורט בשם, ושאר
+        def _is_passport_file(att):
+            fname = att.get("File_Name", "").lower()
+            return ("פספורט" in fname or "passport" in fname or "תעודה" in fname or "id" in fname or "visa" in fname)
+        passport_files = [a for a in attachments if _is_passport_file(a)]
+        other_files = [a for a in attachments if not _is_passport_file(a)]
+        # נסה קודם קבצי פספורט, ורק אם לא מצא - שאר הקבצים
+        attachments_sorted = passport_files + other_files
+
+        found_name = None
+        for att in attachments_sorted:
+            att_id = att["id"]
+            r2 = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments/{att_id}", headers=headers_z)
+            if r2.status_code != 200:
+                continue
+            img_bytes = r2.content
+            content_type = r2.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+            if "png" in content_type:
+                mime = "image/png"
+            elif "webp" in content_type:
+                mime = "image/webp"
+            else:
+                mime = "image/jpeg"
+
+            import base64
+            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+            payload = {
+                "contents": [{"parts": [
+                    {"inline_data": {"mime_type": mime, "data": img_b64}},
+                    {"text": "Look at this image. If it is a passport or official ID document, extract ONLY the full English name (given name + surname as printed). Return ONLY the name in UPPERCASE, nothing else. Format: FIRSTNAME LASTNAME. If the image is NOT a passport or official ID document (e.g. it is a photo of a person, a selfie, a document in a different language without Latin name, or any other non-ID image), return exactly the word: NONE"}
+                ]}],
+                "generationConfig": {"temperature": 0}
+            }
+            try:
+                gr = requests.post(gemini_url, json=payload, timeout=30)
+                if gr.status_code == 200:
+                    import re as _re
+                    extracted = gr.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    extracted_clean = _re.sub(r'[^A-Za-z\s]', '', extracted).strip().upper()
+                    # ודא שזה שם אמיתי: עד 4 מילים, לא יותר מ-50 תווים, לא מכיל מילות סירוב (= לא הסבר מגמיני)
+                    _refusal_words = {"SORRY", "CANNOT", "UNABLE", "DOCUMENT", "IMAGE", "PASSPORT", "REQUEST", "EXTRACT", "PROVIDED", "THEREFORE", "FULFILL", "PHOTOGRAPH", "PERSON", "LOCATED", "NONE"}
+                    word_count = len(extracted_clean.split())
+                    has_refusal = any(w in extracted_clean.split() for w in _refusal_words)
+                    if extracted_clean and 1 <= word_count <= 4 and len(extracted_clean) <= 50 and not has_refusal:
+                        found_name = extracted_clean
+                        break
+            except Exception as e:
+                print(f"Gemini error for {cname}: {e}")
+                continue
+
+        if found_name:
+            upd = requests.put(f"{domain}/crm/v2/Contacts",
+                               headers={**headers_z, "Content-Type": "application/json"},
+                               json={"data": [{"id": cid, "Visa_Name1": found_name}]})
+            if upd.status_code == 200 and upd.json().get("data", [{}])[0].get("code") == "SUCCESS":
+                updated.append(f"✅ {cname} → {found_name}")
+            else:
+                failed.append(f"❌ {cname} - שגיאה בעדכון")
+        else:
+            skipped.append(f"⏩ {cname} - לא נמצא פספורט")
+
+        time.sleep(0.3)  # מנע עומס יתר על Gemini API
+
+    # סיכום
+    lines = [f"🏠 *סיכום עדכון פספורטים - {aname}*", "─" * 28]
+    if updated:
+        lines.append(f"\n✅ עודכנו ({len(updated)}):")
+        lines.extend(updated)
+    if skipped:
+        lines.append(f"\n⏩ דולגו ({len(skipped)}):")
+        lines.extend(skipped)
+    if failed:
+        lines.append(f"\n❌ שגיאות ({len(failed)}):")
+        lines.extend(failed)
+    if already:
+        lines.append(f"\nℹ️ דילגנו על {already} לקוחות - שדה שם הויזה כבר מלא")
+    return "\n".join(lines)
+
+
+# ─── Profile photo helpers ────────────────────────────────────────────────────
+def _crop_face_center(img_bytes: bytes):
+    """
+    מחלץ פנים מהתמונה באמצעות MediaPipe Face Detection.
+    מדויק ומהיר, ללא צורך בקבצי מודל חיצוניים.
+    מחזיר tuple: (face_bytes_or_None, debug_message)
+    """
+    import io
+    import numpy as np
+    from PIL import Image, ImageOps
+
+    debug_lines = []
+
+    try:
+        # פתח תמונה ותקן EXIF rotation
+        img_pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        img_pil = ImageOps.exif_transpose(img_pil)
+        iw, ih = img_pil.size
+        debug_lines.append(f"תמונה: {iw}x{ih}")
+
+        arr = np.array(img_pil)
+
+        best_box = None
+        best_conf = 0.0
+
+        # נסה MediaPipe Face Detection
+        try:
+            import mediapipe as mp
+            mp_face = mp.solutions.face_detection
+            with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.3) as detector:
+                results = detector.process(arr)
+                if results.detections:
+                    for det in results.detections:
+                        conf = det.score[0] if det.score else 0.0
+                        bb = det.location_data.relative_bounding_box
+                        x1 = int(bb.xmin * iw)
+                        y1 = int(bb.ymin * ih)
+                        x2 = int((bb.xmin + bb.width) * iw)
+                        y2 = int((bb.ymin + bb.height) * ih)
+                        # ודא גבולות תקינים
+                        x1, y1 = max(0, x1), max(0, y1)
+                        x2, y2 = min(iw, x2), min(ih, y2)
+                        w, h = x2 - x1, y2 - y1
+                        debug_lines.append(f"MediaPipe: conf={conf:.2f} ({x1},{y1})-({x2},{y2}) {w}x{h}")
+                        if conf > best_conf:
+                            best_conf = conf
+                            best_box = (x1, y1, x2, y2)
+                    if best_box:
+                        debug_lines.append(f"MediaPipe מצא פנים! confidence={best_conf:.2f}")
+                else:
+                    debug_lines.append("MediaPipe לא מצא פנים")
+        except ImportError:
+            debug_lines.append("MediaPipe לא מותקן, מנסה OpenCV")
+        except Exception as mp_err:
+            debug_lines.append(f"MediaPipe שגיאה: {str(mp_err)[:80]}")
+
+        # fallback: נסה OpenCV אם MediaPipe לא מצא
+        if best_box is None:
+            try:
+                import cv2
+                debug_lines.append("מנסה OpenCV Haar Cascade כ-fallback")
+                gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+                cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                face_cascade = cv2.CascadeClassifier(cascade_path)
+                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+                if len(faces) == 0:
+                    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=3, minSize=(20, 20))
+                debug_lines.append(f"Haar: {len(faces)} פנים")
+                if len(faces) > 0:
+                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                    best_box = (x, y, x + w, y + h)
+            except Exception as cv_err:
+                debug_lines.append(f"OpenCV שגיאה: {str(cv_err)[:80]}")
+
+        if best_box is None:
+            return _fallback_crop(img_pil, iw, ih, debug_lines, "no face detected")
+
+        x1, y1, x2, y2 = best_box
+        debug_lines.append(f"פנים נבחרות: ({x1},{y1})-({x2},{y2})")
+
+        # הוסף padding של 20% סביב הפנים (זום קרוב לפנים)
+        fw = x2 - x1
+        fh = y2 - y1
+        pad_w = int(fw * 0.2)
+        pad_h = int(fh * 0.2)
+
+        px1 = max(0, x1 - pad_w)
+        py1 = max(0, y1 - pad_h)
+        px2 = min(iw, x2 + pad_w)
+        py2 = min(ih, y2 + pad_h)
+
+        # חתוך לריבוע מרכזי
+        side = max(px2 - px1, py2 - py1)
+        cx = (px1 + px2) // 2
+        cy = (py1 + py2) // 2
+        sx1 = max(0, cx - side // 2)
+        sy1 = max(0, cy - side // 2)
+        sx2 = min(iw, sx1 + side)
+        sy2 = min(ih, sy1 + side)
+        if sx2 > iw: sx1 = max(0, iw - side); sx2 = iw
+        if sy2 > ih: sy1 = max(0, ih - side); sy2 = ih
+
+        debug_lines.append(f"חיתוך סופי: ({sx1},{sy1})-({sx2},{sy2})")
+
+        cropped = img_pil.crop((sx1, sy1, sx2, sy2))
+        final = cropped.resize((400, 400), Image.LANCZOS)
+        buf = io.BytesIO()
+        final.save(buf, format="JPEG", quality=90)
+        face_bytes = buf.getvalue()
+        debug_lines.append(f"חיתוך הצליח! ({len(face_bytes)//1000}KB)")
+        return face_bytes, "\n".join(debug_lines)
+
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        debug_lines.append(f"Exception: {str(e)[:100]}")
+        debug_lines.append(tb[-300:])
+        return None, "\n".join(debug_lines)
+
+def _fallback_crop(img_pil, iw, ih, debug_lines, reason):
+    """
+    חיתוך fallback - מחפש צבע עור בתמונה כדי למצוא את הפנים
+    """
+    import io
+    import numpy as np
+    from PIL import Image
+    debug_lines.append(f"Fallback crop ({reason}): skin-tone detection")
+
+    try:
+        # המר ל-numpy וחפש צבע עור
+        arr = np.array(img_pil)
+        r, g, b = arr[:,:,0], arr[:,:,1], arr[:,:,2]
+
+        # פילטר צבע עור בסיסי
+        skin_mask = (
+            (r > 80) & (g > 40) & (b > 20) &
+            (r > g) & (r > b) &
+            (r - g > 10) &
+            (np.abs(r.astype(int) - g.astype(int)) > 10)
+        )
+
+        # מצא שורות עם הכי הרבה צבע עור
+        row_sums = skin_mask.sum(axis=1)
+        best_row = int(np.argmax(row_sums))
+        debug_lines.append(f"Skin row: {best_row} ({row_sums[best_row]} pixels)")
+
+        # חתוך ריבוע סביב השורה הזו
+        half = min(ih // 4, iw // 2)  # גודל הריבוע
+        y1 = max(0, best_row - half)
+        y2 = min(ih, best_row + half)
+        # מצא את העמודה האופקית
+        col_sums = skin_mask[y1:y2, :].sum(axis=0)
+        best_col = int(np.argmax(col_sums)) if col_sums.max() > 0 else iw // 2
+        x1 = max(0, best_col - half)
+        x2 = min(iw, best_col + half)
+        side = max(x2 - x1, y2 - y1)
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        sx1 = max(0, cx - side // 2)
+        sy1 = max(0, cy - side // 2)
+        sx2 = min(iw, sx1 + side)
+        sy2 = min(ih, sy1 + side)
+        debug_lines.append(f"Skin crop: ({sx1},{sy1})-({sx2},{sy2})")
+    except Exception as e:
+        debug_lines.append(f"Skin detection failed: {e}, using center")
+        # אם נכשל - חתוך מרכז התמונה
+        side = min(iw, ih // 2)
+        sx1 = iw // 2 - side // 2
+        sy1 = ih // 4
+        sx2 = sx1 + side
+        sy2 = sy1 + side
+
+    cropped = img_pil.crop((sx1, sy1, sx2, sy2))
+    final = cropped.resize((400, 400), Image.LANCZOS)
+    buf = io.BytesIO()
+    final.save(buf, format="JPEG", quality=90)
+    return buf.getvalue(), "\n".join(debug_lines)
+
+def handle_profile_image_upload(name_q: str, media_url: str, media_type: str, from_number: str) -> str:
+    """
+    מטפל בתמונת פרופיל נכנסת:
+    1. מחפש לקוח לפי שם
+    2. מעלה תמונה מקורית כ-attachment בשם 'פרופיל'
+    3. מחלץ פנים ומגדיר כתמונת פרופיל ב-Zoho
+    """
+    contacts = _word_search_contacts(name_q)
+    if not contacts:
+        for word in name_q.split():
+            if len(word) >= 2:
+                contacts = _word_search_contacts(word, per_page=15)
+                if contacts:
+                    break
+    if not contacts:
+        return f"❓ לא מצאתי לקוח בשם *{name_q}* - נסה שם קצר יותר"
+
+    if len(contacts) > 1:
+        sessions[from_number] = {
+            "pending": "choose_contact_profile_upload",
+            "contacts": contacts,
+            "name_q": name_q,
+            "media_url": media_url,
+            "media_type": media_type
+        }
+        return _format_contact_choice_menu(contacts, "העלאת פרופיל")
+
+    return _do_profile_upload(contacts[0], media_url, media_type)
+
+
+def _do_profile_upload(contact: dict, media_url: str, media_type: str) -> str:
+    """
+    מוריד תמונה:
+    שלב 1 - מעלה תמונה מקורית כ-attachment 'פרופיל'
+    שלב 2 - חותך פנים עם Gemini ושומר כקובץ חדש 'פרופיל_פנים'
+    שלב 3 - מעלה 'פרופיל_פנים' כ-attachment ומגדיר כתמונת פרופיל ב-Zoho
+    """
+    contact_id = contact["id"]
+    contact_name = contact.get("Full_Name", "")
+    token, domain = get_access_token()
+    headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+
+    # ── שלב 1: הורד תמונה מקורית ──────────────────────────────────────────
+    try:
+        img_resp = requests.get(media_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), timeout=30)
+        if img_resp.status_code != 200:
+            return f"❌ שגיאה בהורדת התמונה (status {img_resp.status_code})"
+        img_bytes = img_resp.content
+    except Exception as e:
+        return f"❌ שגיאה בהורדת התמונה: {e}"
+
+    ext = "jpg"
+    if "png" in media_type: ext = "png"
+    elif "webp" in media_type: ext = "webp"
+    orig_file_name = f"פרופיל.{ext}"
+
+    # ── שלב 2: העלה תמונה מקורית כ-attachment ─────────────────────────────
+    orig_upload_ok = False
+    try:
+        upload_resp = requests.post(
+            f"{domain}/crm/v2/Contacts/{contact_id}/Attachments",
+            headers=headers_z,
+            files={"file": (orig_file_name, img_bytes, media_type)}
+        )
+        print(f"Original attachment upload: {upload_resp.status_code} {upload_resp.text[:200]}")
+        orig_upload_ok = upload_resp.status_code in [200, 201]
+    except Exception as e:
+        print(f"Original attachment error: {e}")
+
+    if not orig_upload_ok:
+        return f"❌ שגיאה בהעלאת הקובץ המקורי ל-Zoho"
+
+    # ── שלב 3: חתוך פנים עם Gemini ─────────────────────────────────────────
+    face_bytes = None
+    face_file_name = "פרופיל_פנים.jpg"
+    face_debug = ""
+    face_bytes, face_debug = _crop_face_center(img_bytes)
+
+    if not face_bytes:
+        return (f"📎 קובץ '{orig_file_name}' הועלה לקבצים המצורפים\n"
+                f"⚠️ לא הצלחתי לחתוך פנים:\n{face_debug}")
+
+    # ── שלב 4: העלה תמונת פנים כ-attachment נפרד ─────────────────────────
+    face_att_ok = False
+    try:
+        face_att_resp = requests.post(
+            f"{domain}/crm/v2/Contacts/{contact_id}/Attachments",
+            headers=headers_z,
+            files={"file": (face_file_name, face_bytes, "image/jpeg")}
+        )
+        print(f"Face attachment upload: {face_att_resp.status_code} {face_att_resp.text[:200]}")
+        face_att_ok = face_att_resp.status_code in [200, 201]
+    except Exception as e:
+        print(f"Face attachment error: {e}")
+
+    # ── שלב 5: הגדר תמונת פנים כתמונת פרופיל ב-Zoho ─────────────────────
+    photo_ok = False
+    photo_status = ""
+    try:
+        photo_resp = requests.post(
+            f"{domain}/crm/v2/Contacts/{contact_id}/photo",
+            headers=headers_z,
+            files={"file": ("profile.jpg", face_bytes, "image/jpeg")}
+        )
+        photo_status = f"{photo_resp.status_code}"
+        print(f"Photo upload status: {photo_resp.status_code} {photo_resp.text[:200]}")
+        photo_ok = photo_resp.status_code in [200, 201, 202]
+    except Exception as e:
+        photo_status = str(e)[:50]
+        print(f"Profile photo error: {e}")
+
+    # ── בנה תשובה ─────────────────────────────────────────────────────────
+    lines = [f"👤 {contact_name}"]
+    lines.append(f"📎 '{orig_file_name}' הועלה לקבצים המצורפים")
+    if face_debug:
+        lines.append(face_debug)
+    if face_att_ok:
+        lines.append(f"📎 '{face_file_name}' הועלה לקבצים המצורפים")
+    if photo_ok:
+        lines.append(f"🖼️ תמונת פרופיל עודכנה עם מיקוד פנים ✅")
+    else:
+        lines.append(f"⚠️ לא הצלחתי לעדכן תמונת פרופיל (status {photo_status})")
+    return "\n".join(lines)
+
+
+
+def _scan_profiles_for_account(account: dict) -> tuple:
+    """
+    סורק את כל לקוחות בעל הבית ובודק אם יש להם תמונת פרופיל.
+    מחזיר (message_str, contacts_data)
+    contacts_data = [(contact, has_photo: bool, atts: list)]
+    """
+    aid = account["id"]
+    aname = account.get("Account_Name", "")
+    token, domain = get_access_token()
+    headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+
+    all_contacts = []
+    page = 1
+    while True:
+        batch, info = zoho_get_full("Contacts/search", {
+            "criteria": f"(Account_Name:equals:{aid})",
+            "fields": "Full_Name,id",
+            "per_page": 200, "page": page
+        })
+        if not batch: break
+        all_contacts.extend(batch)
+        if not info.get("more_records", False): break
+        page += 1
+
+    if not all_contacts:
+        return f"❌ לא נמצאו לקוחות - *{aname}*", []
+
+    contacts_data = []
+    for contact in all_contacts:
+        cid = contact["id"]
+        # Check if has profile photo by trying GET /photo
+        photo_r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/photo", headers=headers_z)
+        has_photo = photo_r.status_code == 200 and len(photo_r.content) > 1000
+
+        # Get attachments list
+        att_r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z)
+        atts = att_r.json().get("data", []) if att_r.status_code == 200 else []
+        contacts_data.append((contact, has_photo, atts))
+        time.sleep(0.15)
+
+    # Build summary message
+    lines = [f"📋 *סקירת פרופילים - {aname}*", "─" * 28]
+    for i, (contact, has_photo, atts) in enumerate(contacts_data, 1):
+        cname = contact.get("Full_Name", "")
+        img_count = sum(1 for a in atts if a.get("File_Name","").lower().endswith(('.jpg','.jpeg','.png','.webp')))
+        status = "✅" if has_photo else "❌"
+        lines.append(f"{i}. {status} {cname} ({img_count} תמונות)")
+
+    no_photo_nums = [str(i) for i, (_, has_photo, _) in enumerate(contacts_data, 1) if not has_photo]
+    lines.append("")
+    lines.append(f"✅ יש תמונה: {sum(1 for _,h,_ in contacts_data if h)}")
+    lines.append(f"❌ אין תמונה: {sum(1 for _,h,_ in contacts_data if not h)}")
+    lines.append("")
+    lines.append("שלח מספרים של מי לתקן (מופרדים בפסיקים)")
+    if no_photo_nums:
+        lines.append(f"💡 ללא תמונה: {', '.join(no_photo_nums)}")
+    lines.append("0 = סיום")
+
+    return "\n".join(lines), contacts_data
+
+
+def _fix_profiles_from_next_attachment(to_fix: list, account: dict, from_number: str, used_att_ids: dict = None) -> tuple:
+    """
+    מנסה לתקן פרופילים עבור רשימת לקוחות.
+    to_fix = [(contact, atts)]
+    used_att_ids = {contact_id: [att_id, ...]} - קבצים שכבר שימשו (לדלג עליהם)
+    מחזיר (result_str, new_used_att_ids)
+    """
+    import re as _re
+    if used_att_ids is None:
+        used_att_ids = {}
+    new_used_att_ids = {}
+
+    def _is_image_file(fname: str) -> bool:
+        return fname.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'))
+
+    aname = account.get("Account_Name", "")
+    token, domain = get_access_token()
+    headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+
+    updated = []
+    failed = []
+    total = len(to_fix)
+
+    for i, (contact, atts) in enumerate(to_fix, 1):
+        cname = contact.get("Full_Name", "")
+        cid = contact["id"]
+        cname_lower = cname.lower()
+
+        # קבצים שכבר שימשו עבור לקוח זה
+        already_used = set(used_att_ids.get(cid, []))
+        image_atts = [a for a in atts if _is_image_file(a.get("File_Name", ""))]
+        if not image_atts:
+            failed.append(f"{cname} (אין תמונות)")
+            _send_reply(f"⏩ [{i}/{total}] {cname} - אין תמונות בקבצים", from_number)
+            continue
+
+        # Priority order: פרופיל → מכשיר → שם לקוח → שאר (לא פספורט) → פספורט
+        passport_atts = [a for a in image_atts if "פספורט" in a.get("File_Name","").lower() or "passport" in a.get("File_Name","").lower()]
+        non_passport = [a for a in image_atts if a not in passport_atts]
+
+        ordered = []
+        # 1. פרופיל
+        for a in image_atts:
+            fn = a.get("File_Name","").lower()
+            if ("פרופיל" in fn or "profile" in fn) and a not in ordered:
+                ordered.append(a)
+        # 2. מכשיר
+        for a in image_atts:
+            fn = a.get("File_Name","").lower()
+            if "מכשיר" in fn and a not in ordered:
+                ordered.append(a)
+        # 3. שם לקוח
+        name_words = [w for w in cname_lower.split() if len(w) >= 2]
+        for a in non_passport:
+            fn = a.get("File_Name","").lower()
+            if any(w in fn for w in name_words) and a not in ordered:
+                ordered.append(a)
+        # 4. שאר (לא פספורט)
+        for a in non_passport:
+            if a not in ordered:
+                ordered.append(a)
+        # 5. פספורט - רק אם אין אחרים
+        if not non_passport:
+            for a in passport_atts:
+                if a not in ordered:
+                    ordered.append(a)
+
+        success = False
+        for att in ordered:
+            # דלג על קבצים שכבר שימשו (לפי זיכרון סשן)
+            if att['id'] in already_used:
+                _send_reply(f"⏩ [{i}/{total}] {cname} - דולג על {att['File_Name']} (כבר שימש)", from_number)
+                continue
+            r2 = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments/{att['id']}", headers=headers_z)
+            if r2.status_code != 200:
+                continue
+            face_bytes, face_dbg = _crop_face_center(r2.content)
+            if not face_bytes:
+                _send_reply(f"⚠️ [{i}/{total}] {cname} - {att['File_Name']}: חיתוך נכשל ({face_dbg[:40]})", from_number)
+                already_used.add(att['id'])  # סמן כנסה
+                continue
+            try:
+                photo_resp = requests.post(
+                    f"{domain}/crm/v2/Contacts/{cid}/photo",
+                    headers=headers_z,
+                    files={"file": ("profile.jpg", face_bytes, "image/jpeg")}
+                )
+                if photo_resp.status_code in [200, 201, 202]:
+                    updated.append(cname)
+                    _send_reply(f"✅ [{i}/{total}] {cname} - עודכן מ: {att['File_Name']}", from_number)
+                    new_used_att_ids[cid] = list(already_used | {att['id']})
+                    success = True
+                    break
+                else:
+                    _send_reply(f"⚠️ [{i}/{total}] {cname} - {att['File_Name']}: שגיאה Zoho ({photo_resp.status_code})", from_number)
+            except Exception as e:
+                _send_reply(f"⚠️ [{i}/{total}] {cname} - שגיאה: {str(e)[:40]}", from_number)
+            time.sleep(0.3)
+
+        if not success:
+            failed.append(cname)
+            new_used_att_ids[cid] = list(already_used)
+
+        time.sleep(0.5)
+
+    lines = [f"🏠 *סיכום תיקון פרופילים - {aname}*", "─" * 28]
+    lines.append(f"✅ עודכנו: {len(updated)}")
+    if failed:
+        lines.append(f"❌ נכשלו: {len(failed)}")
+        for n in failed:
+            lines.append(f"  • {n}")
+    return "\n".join(lines), new_used_att_ids
+
+
+def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
+    """
+    עובר על כל לקוחות של בעל בית ומחפש תמונת פרופיל לפי סדר עדיפויות:
+    1. קובץ בשם 'פרופיל' (כולל וריאציות)
+    2. קובץ בשם 'מכשיר' או שמכיל 'מכשיר'
+    3. קובץ שמכיל את שם הלקוח
+    4. כל קובץ תמונה (jpg/jpeg/png) - קובץ קובץ
+    5. פספורט - רק אם זה הקובץ היחיד שיש
+    """
+    import re
+
+    def _is_image_file(fname: str) -> bool:
+        return fname.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'))
+
+    def _pick_best_attachment(atts: list, contact_name: str) -> tuple:
+        """
+        בוחר את הקובץ הטוב ביותר לפי סדר עדיפויות.
+        מחזיר (attachment, reason) או (None, reason)
+        """
+        if not atts:
+            return None, "אין קבצים"
+
+        name_lower = contact_name.lower()
+        image_atts = [a for a in atts if _is_image_file(a.get("File_Name", ""))]
+        passport_atts = [a for a in atts if "פספורט" in a.get("File_Name", "").lower() or "passport" in a.get("File_Name", "").lower()]
+        non_passport_images = [a for a in image_atts if a not in passport_atts]
+
+        # שלב 1: קובץ בשם פרופיל
+        for a in image_atts:
+            fn = a.get("File_Name", "").lower()
+            if "פרופיל" in fn or "profile" in fn:
+                return a, f"קובץ פרופיל: {a['File_Name']}"
+
+        # שלב 2: קובץ בשם מכשיר
+        for a in image_atts:
+            fn = a.get("File_Name", "").lower()
+            if "מכשיר" in fn:
+                return a, f"קובץ מכשיר: {a['File_Name']}"
+
+        # שלב 3: קובץ שמכיל את שם הלקוח
+        # נסה כל מילה בשם הלקוח (לפחות 2 תווים)
+        name_words = [w for w in name_lower.split() if len(w) >= 2]
+        for a in non_passport_images:
+            fn = a.get("File_Name", "").lower()
+            for word in name_words:
+                if word in fn:
+                    return a, f"קובץ עם שם לקוח ({word}): {a['File_Name']}"
+
+        # שלב 4: כל קובץ תמונה שאינו פספורט
+        if non_passport_images:
+            a = non_passport_images[0]
+            return a, f"תמונה ראשונה (לא פספורט): {a['File_Name']}"
+
+        # שלב 5: פספורט - רק אם זה הקובץ היחיד
+        if passport_atts and len(image_atts) == len(passport_atts):
+            a = passport_atts[0]
+            return a, f"פספורט (היחיד): {a['File_Name']}"
+
+        # אין תמונות בכלל
+        if not image_atts:
+            return None, "אין קבצי תמונה"
+
+        return None, "לא נמצא קובץ מתאים"
+
+    aid = account["id"]
+    aname = account.get("Account_Name", "")
+    token, domain = get_access_token()
+    headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+
+    all_contacts = []
+    page = 1
+    while True:
+        batch, info = zoho_get_full("Contacts/search", {
+            "criteria": f"(Account_Name:equals:{aid})",
+            "fields": "Full_Name,id",
+            "per_page": 200, "page": page
+        })
+        if not batch: break
+        all_contacts.extend(batch)
+        if not info.get("more_records", False): break
+        page += 1
+
+    if not all_contacts:
+        return f"❌ לא נמצאו לקוחות - *{aname}*"
+
+    # סרוק כל לקוח ובחר את הקובץ הטוב ביותר
+    to_process = []   # [(contact, attachment, reason)]
+    no_image = []     # [cname]
+
+    for contact in all_contacts:
+        cid = contact["id"]
+        cname = contact.get("Full_Name", "")
+        r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z)
+        if r.status_code == 200 and r.json().get("data"):
+            atts = r.json()["data"]
+            best_att, reason = _pick_best_attachment(atts, cname)
+            if best_att:
+                to_process.append((contact, best_att, reason))
+            else:
+                no_image.append(f"{cname} ({reason})")
+        else:
+            no_image.append(f"{cname} (אין קבצים)")
+        time.sleep(0.1)
+
+    # שלח סיכום לפני התחלה
+    summary_lines = [
+        f"🔍 *סיכום לפני עדכון פרופילים - {aname}*",
+        "─" * 28,
+        f"🟢 נמצאה תמונה ({len(to_process)}) - יעודכנו:",
+    ]
+    for c, att, reason in to_process:
+        summary_lines.append(f"  • {c.get('Full_Name','')} ← {reason}")
+    if no_image:
+        summary_lines.append(f"\n⏩ אין תמונה ({len(no_image)}) - ידולגו:")
+        for n in no_image:
+            summary_lines.append(f"  • {n}")
+    summary_lines.append(f"\n⏳ מתחיל עיבוד {len(to_process)} לקוחות...")
+    _send_reply("\n".join(summary_lines), from_number)
+
+    if not to_process:
+        return f"❌ לא נמצאו תמונות בבית *{aname}*"
+
+    updated = []
+    failed = []
+
+    used_att_ids = {}  # {contact_id: att_id} - מעקב אחר קבצים ששימשו
+
+    for i, (contact, att, reason) in enumerate(to_process, 1):
+        cname = contact.get("Full_Name", "")
+        cid = contact["id"]
+
+        r2 = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments/{att['id']}", headers=headers_z)
+        if r2.status_code != 200:
+            failed.append(cname)
+            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה בהורדת קובץ ({r2.status_code})", from_number)
+            continue
+
+        face_bytes, face_dbg = _crop_face_center(r2.content)
+        if not face_bytes:
+            failed.append(cname)
+            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - חיתוך נכשל: {face_dbg[:60]}", from_number)
+            continue
+
+        try:
+            photo_resp = requests.post(
+                f"{domain}/crm/v2/Contacts/{cid}/photo",
+                headers=headers_z,
+                files={"file": ("profile.jpg", face_bytes, "image/jpeg")}
+            )
+            if photo_resp.status_code in [200, 201, 202]:
+                updated.append(cname)
+                used_att_ids[cid] = [att['id']]  # שמור את ה-attachment ששימש
+                _send_reply(f"✅ [{i}/{len(to_process)}] {cname} - פרופיל עודכן ({reason})", from_number)
+            else:
+                failed.append(cname)
+                _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה ({photo_resp.status_code})", from_number)
+        except Exception as e:
+            failed.append(cname)
+            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה: {str(e)[:50]}", from_number)
+
+        time.sleep(0.5)
+
+    # סיכום סופי
+    lines = [f"🏠 *סיכום סופי - פרופילים {aname}*", "─" * 28]
+    lines.append(f"✅ עודכנו: {len(updated)}")
+    if no_image:
+        lines.append(f"⏩ דולגו (אין תמונה): {len(no_image)}")
+    if failed:
+        lines.append(f"❌ שגיאות: {len(failed)}")
+        for n in failed:
+            lines.append(f"  • {n}")
+    return "\n".join(lines), used_att_ids
+
+def _send_reply(reply: str, from_number: str, original_msg: str = ""):
+    """שולח תשובה ל-WhatsApp עם ציטוט, מפצל אם ארוך מדי."""
+    quote = f"📩 \"{original_msg}\"\n─────────────\n" if original_msg else ""
+    full_reply = quote + reply
+    MAX_LEN = 1550
+    if len(full_reply) > MAX_LEN:
+        mid = len(full_reply) // 2
+        cut = full_reply.rfind('\n', mid - 200, mid + 200)
+        if cut == -1:
+            cut = mid
+        part1 = full_reply[:cut].strip()
+        part2 = full_reply[cut:].strip()
+        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part1)
+        time.sleep(0.5)
+        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part2)
+    else:
+        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=full_reply)
+
+
+def handle_passport_image_upload(name_q: str, media_url: str, media_type: str, from_number: str) -> str:
+    """
+    מטפל בתמונת פספורט נכנסת:
+    1. מחפש לקוח לפי שם
+    2. אם כמה - שומר session ומבקש בחירה
+    3. אם אחד - מעלה תמונה ל-Zoho + מחלץ שם + מעדכן Visa_Name1
+    """
+    # חיפוש לקוח
+    contacts = _word_search_contacts(name_q)
+    if not contacts:
+        for word in name_q.split():
+            if len(word) >= 2:
+                contacts = _word_search_contacts(word, per_page=15)
+                if contacts:
+                    break
+    if not contacts:
+        return f"❓ לא מצאתי לקוח בשם *{name_q}* - נסה שם קצר יותר"
+
+    if len(contacts) > 1:
+        sessions[from_number] = {
+            "pending": "choose_contact_passport_upload",
+            "contacts": contacts,
+            "name_q": name_q,
+            "media_url": media_url,
+            "media_type": media_type
+        }
+        return _format_contact_choice_menu(contacts, "העלאת פספורט")
+
+    return _do_passport_upload_and_update(contacts[0], media_url, media_type)
+
+
+def _do_passport_upload_and_update(contact: dict, media_url: str, media_type: str) -> str:
+    """מוריד תמונה מ-Twilio, מעלה ל-Zoho, מחלץ שם ומעדכן Visa_Name1."""
+    contact_id = contact["id"]
+    contact_name = contact.get("Full_Name", "")
+    token, domain = get_access_token()
+    headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+
+    # הורד תמונה מ-Twilio (עם אימות)
+    try:
+        img_resp = requests.get(media_url,
+                                auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
+                                timeout=30)
+        if img_resp.status_code != 200:
+            return f"❌ שגיאה בהורדת התמונה (status {img_resp.status_code})"
+        img_bytes = img_resp.content
+    except Exception as e:
+        return f"❌ שגיאה בהורדת התמונה: {e}"
+
+    # קבע סיומת קובץ
+    ext = "jpg"
+    if "png" in media_type:
+        ext = "png"
+    elif "webp" in media_type:
+        ext = "webp"
+    file_name = f"פספורט.{ext}"
+
+    # העלה ל-Zoho כ-attachment
+    try:
+        upload_resp = requests.post(
+            f"{domain}/crm/v2/Contacts/{contact_id}/Attachments",
+            headers=headers_z,
+            files={"file": (file_name, img_bytes, media_type)}
+        )
+        print(f"Zoho upload status: {upload_resp.status_code} {upload_resp.text[:200]}")
+        if upload_resp.status_code not in [200, 201]:
+            return f"❌ שגיאה בהעלאת הקובץ ל-Zoho (status {upload_resp.status_code})"
+    except Exception as e:
+        return f"❌ שגיאה בהעלאת הקובץ: {e}"
+
+    # חלץ שם באנגלית מהתמונה עם Gemini Vision
+    import base64
+    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+    gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": [{
+            "parts": [
+                {"inline_data": {"mime_type": media_type, "data": img_b64}},
+                {"text": "Look at this image. If it is a passport or official ID document, extract ONLY the full English name (given name + surname as printed). Return ONLY the name in UPPERCASE, nothing else. Format: FIRSTNAME LASTNAME. If the image is NOT a passport or official ID document (e.g. it is a photo of a person, a selfie, a document in a different language without Latin name, or any other non-ID image), return exactly the word: NONE"}
+            ]
+        }],
+        "generationConfig": {"temperature": 0}
+    }
+    try:
+        gr = requests.post(gemini_url, json=payload, timeout=30)
+        if gr.status_code == 200:
+            import re as _re
+            extracted = gr.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            extracted_clean = _re.sub(r'[^A-Za-z\s]', '', extracted).strip().upper()
+            _refusal_words = {"SORRY", "CANNOT", "UNABLE", "DOCUMENT", "IMAGE", "PASSPORT", "REQUEST", "EXTRACT", "PROVIDED", "THEREFORE", "FULFILL", "PHOTOGRAPH", "PERSON", "LOCATED", "NONE"}
+            word_count = len(extracted_clean.split())
+            has_refusal = any(w in extracted_clean.split() for w in _refusal_words)
+            if extracted_clean and 1 <= word_count <= 4 and len(extracted_clean) <= 50 and not has_refusal:
+                upd = requests.put(f"{domain}/crm/v2/Contacts",
+                                   headers={**headers_z, "Content-Type": "application/json"},
+                                   json={"data": [{"id": contact_id, "Visa_Name1": extracted_clean}]})
+                if upd.status_code == 200 and upd.json().get("data", [{}])[0].get("code") == "SUCCESS":
+                    return (f"✅ פספורט הועלה ושם ויזה עודכן!\n"
+                            f"👤 {contact_name}\n"
+                            f"🪪 {extracted_clean}\n"
+                            f"📎 הקובץ נשמר בשם: {file_name}")
+                return f"📎 הקובץ הועלה אך שגיאה בעדכון שם ויזה"
+    except Exception as e:
+        print(f"Gemini vision error in upload: {e}")
+
+    return f"📎 הקובץ הועלה בשם {file_name} אך לא הצלחתי לחלץ שם"
+
+
 # ─── Webhook ───────────────────────────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         incoming_msg = request.values.get("Body", "").strip()
         from_number  = request.values.get("From", "")
-        print(f"=== WEBHOOK: msg='{incoming_msg}' from='{from_number}' ===")
+        num_media    = int(request.values.get("NumMedia", 0))
+        print(f"=== WEBHOOK: msg='{incoming_msg}' from='{from_number}' NumMedia={num_media} ===")
         
         # Ensure from_number is in correct format
         from_number = from_number.replace(" ", "+")
@@ -2369,6 +4034,24 @@ def webhook():
             from_number = from_number.replace("whatsapp:", "whatsapp:+")
         
         print(f"=== Fixed from_number: '{from_number}' ===")
+
+        # === טיפול בתמונת פספורט נכנסת ===
+        # פורמט: תמונה + כיתוב "פספורט [שם לקוח]"
+        if num_media > 0 and incoming_msg.strip().startswith("פרופיל "):
+            name_q = incoming_msg.strip()[len("פרופיל "):].strip()
+            media_url = request.values.get("MediaUrl0", "")
+            media_type = request.values.get("MediaContentType0", "image/jpeg")
+            reply = handle_profile_image_upload(name_q, media_url, media_type, from_number)
+            _send_reply(reply, from_number, incoming_msg)
+            return str(MessagingResponse())
+
+        if num_media > 0 and incoming_msg.strip().startswith("פספורט "):
+            name_q = incoming_msg.strip()[len("פספורט "):].strip()
+            media_url = request.values.get("MediaUrl0", "")
+            media_type = request.values.get("MediaContentType0", "image/jpeg")
+            reply = handle_passport_image_upload(name_q, media_url, media_type, from_number)
+            _send_reply(reply, from_number, incoming_msg)
+            return str(MessagingResponse())
         
         reply = handle_command(incoming_msg, from_number)
         
