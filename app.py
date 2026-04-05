@@ -2420,8 +2420,14 @@ def handle_command(message, from_number):
                 for acc in chosen:
                     aname = acc.get("Account_Name", "")
                     _send_reply(f"⏳ מעדכן פרופילים - *{aname}*...", from_number)
-                    result = bulk_profile_update_for_account(acc, from_number)
-                    _send_reply(result, from_number)
+                    ret = bulk_profile_update_for_account(acc, from_number)
+                    # הפונקציה מחזירה tuple (result, used_att_ids) או string
+                    if isinstance(ret, tuple):
+                        result = ret[0]
+                    else:
+                        result = ret
+                    if result:
+                        _send_reply(str(result), from_number)
                 _send_reply(f"✅ *סיום פרופיל כללי*\nעודכנו {len(chosen)} בעלי בתים: {names}", from_number)
             except Exception as e:
                 _send_reply(f"❌ שגיאה: {e}", from_number)
