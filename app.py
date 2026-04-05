@@ -44,37 +44,6 @@ _product_cache = {
 # ─── Session memory (per phone number) ────────────────────────────────────────
 sessions = {}
 
-# ─── Resume State - שמירת מצב פרופיל כללי לשחזור אחרי רסטרט ──────────────────
-RESUME_STATE_FILE = "/tmp/bot_logs/profile_resume_state.json"
-_resume_lock = threading.Lock()
-
-def _save_resume_state(state: dict):
-    """שומר מצב ריצה ל-/tmp כדי שיוכל להמשיך אחרי רסטרט"""
-    try:
-        os.makedirs(os.path.dirname(RESUME_STATE_FILE), exist_ok=True)
-        with open(RESUME_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False)
-    except Exception as e:
-        print(f"[Resume] Failed to save state: {e}")
-
-def _load_resume_state() -> dict:
-    """טוען מצב ריצה קודם אם קיים"""
-    try:
-        if os.path.exists(RESUME_STATE_FILE):
-            with open(RESUME_STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
-
-def _clear_resume_state():
-    """מוחק את קובץ המצב אחרי סיום מוצלח"""
-    try:
-        if os.path.exists(RESUME_STATE_FILE):
-            os.remove(RESUME_STATE_FILE)
-    except Exception:
-        pass
-
 # ──# ─── יומן פעולות יומי (קובץ קבוע) ──────────────────────────────────
 LOG_DIR = "/tmp/bot_logs"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -3315,27 +3284,54 @@ def _crop_face_center(img_bytes: bytes):
         best_box = None
         best_conf = 0.0
 
-        # זיהוי פנים באמצעות OpenCV Haar Cascade (קל ויעיל)
+        # נסה MediaPipe Face Detection
         try:
-            import cv2
-            gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-            face_cascade = cv2.CascadeClassifier(cascade_path)
-            # ניסיון ראשון - הגדרות סטנדרטיות
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-            if len(faces) == 0:
-                # ניסיון שני - הגדרות מרוככות יותר
-                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=3, minSize=(20, 20))
-            if len(faces) == 0:
-                # ניסיון שלישי - תמונות קשות
-                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.03, minNeighbors=2, minSize=(15, 15))
-            debug_lines.append(f"Haar: {len(faces)} פנים")
-            if len(faces) > 0:
-                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-                best_box = (x, y, x + w, y + h)
-                debug_lines.append(f"Haar מצא פנים: ({x},{y}) {w}x{h}")
-        except Exception as cv_err:
-            debug_lines.append(f"OpenCV שגיאה: {str(cv_err)[:80]}")
+            import mediapipe as mp
+            mp_face = mp.solutions.face_detection
+            with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.3) as detector:
+                results = detector.process(arr)
+                if results.detections:
+                    for det in results.detections:
+                        conf = det.score[0] if det.score else 0.0
+                        bb = det.location_data.relative_bounding_box
+                        x1 = int(bb.xmin * iw)
+                        y1 = int(bb.ymin * ih)
+                        x2 = int((bb.xmin + bb.width) * iw)
+                        y2 = int((bb.ymin + bb.height) * ih)
+                        # ודא גבולות תקינים
+                        x1, y1 = max(0, x1), max(0, y1)
+                        x2, y2 = min(iw, x2), min(ih, y2)
+                        w, h = x2 - x1, y2 - y1
+                        debug_lines.append(f"MediaPipe: conf={conf:.2f} ({x1},{y1})-({x2},{y2}) {w}x{h}")
+                        if conf > best_conf:
+                            best_conf = conf
+                            best_box = (x1, y1, x2, y2)
+                    if best_box:
+                        debug_lines.append(f"MediaPipe מצא פנים! confidence={best_conf:.2f}")
+                else:
+                    debug_lines.append("MediaPipe לא מצא פנים")
+        except ImportError:
+            debug_lines.append("MediaPipe לא מותקן, מנסה OpenCV")
+        except Exception as mp_err:
+            debug_lines.append(f"MediaPipe שגיאה: {str(mp_err)[:80]}")
+
+        # fallback: נסה OpenCV אם MediaPipe לא מצא
+        if best_box is None:
+            try:
+                import cv2
+                debug_lines.append("מנסה OpenCV Haar Cascade כ-fallback")
+                gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+                cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                face_cascade = cv2.CascadeClassifier(cascade_path)
+                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+                if len(faces) == 0:
+                    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=3, minSize=(20, 20))
+                debug_lines.append(f"Haar: {len(faces)} פנים")
+                if len(faces) > 0:
+                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                    best_box = (x, y, x + w, y + h)
+            except Exception as cv_err:
+                debug_lines.append(f"OpenCV שגיאה: {str(cv_err)[:80]}")
 
         if best_box is None:
             return _fallback_crop(img_pil, iw, ih, debug_lines, "no face detected")
@@ -3742,10 +3738,38 @@ def _fix_profiles_from_next_attachment(to_fix: list, account: dict, from_number:
     return "\n".join(lines), new_used_att_ids
 
 
+# ─── מנגנון חידוש אוטומטי ──────────────────────────────────────────────────────
+_RESUME_FILE = "/tmp/bot_logs/profile_resume.json"
+
+def _save_resume(data: dict):
+    try:
+        os.makedirs("/tmp/bot_logs", exist_ok=True)
+        with open(_RESUME_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"[Resume] save error: {e}")
+
+def _load_resume() -> dict:
+    try:
+        if os.path.exists(_RESUME_FILE):
+            with open(_RESUME_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def _clear_resume():
+    try:
+        if os.path.exists(_RESUME_FILE):
+            os.remove(_RESUME_FILE)
+    except Exception:
+        pass
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: set = None) -> str:
     """
     עובר על כל לקוחות של בעל בית ומחפש תמונת פרופיל לפי סדר עדיפויות:
-    skip_ids: סט של contact IDs שכבר עובדו (לדילוג בחידוש אוטומטי)
     1. קובץ בשם 'פרופיל' (כולל וריאציות)
     2. קובץ בשם 'מכשיר' או שמכיל 'מכשיר'
     3. קובץ שמכיל את שם הלקוח
@@ -3811,8 +3835,6 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
     aname = account.get("Account_Name", "")
     token, domain = get_access_token()
     headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
-    if skip_ids is None:
-        skip_ids = set()
 
     all_contacts = []
     page = 1
@@ -3839,8 +3861,8 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
         cid = contact["id"]
         cname = contact.get("Full_Name", "")
 
-        # דלג לקוחות שכבר עובדו בריצה קודמת (חידוש אוטומטי)
-        if cid in skip_ids:
+        # דלג לקוחות שכבר עובדו (חידוש אוטומטי)
+        if skip_ids and cid in skip_ids:
             has_photo_already.append(cname)
             continue
 
@@ -3852,26 +3874,22 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
         # בדוק אם כבר יש תמונת פרופיל - אם כן, דלג
         try:
             photo_r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/photo", headers=headers_z, timeout=15)
-            _has_photo = photo_r.status_code == 200 and len(photo_r.content) > 1000
-            del photo_r  # שחרר זיכרון מידי
-            if _has_photo:
+            if photo_r.status_code == 200 and len(photo_r.content) > 1000:
                 has_photo_already.append(cname)
                 time.sleep(0.1)
                 continue
         except Exception:
             pass  # אם הבדיקה נכשלה, ממשיכים לעיבוד
 
-        r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z, timeout=15)
+        r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z)
         if r.status_code == 200 and r.json().get("data"):
             atts = r.json()["data"]
             best_att, reason = _pick_best_attachment(atts, cname)
-            del r  # שחרר זיכרון
             if best_att:
                 to_process.append((contact, best_att, reason))
             else:
                 no_image.append(f"{cname} ({reason})")
         else:
-            del r
             no_image.append(f"{cname} (אין קבצים)")
         time.sleep(0.1)
 
@@ -3880,10 +3898,8 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
     will_update = len(to_process)
     will_skip = len(no_image)
     already_have = len(has_photo_already)
-    is_resume = len(skip_ids) > 0
-    title = f"🔄 *חידוש פרופילים - {aname}*" if is_resume else f"🔍 *סיכום לפני עדכון פרופילים - {aname}*"
     summary_lines = [
-        title,
+        f"🔍 *סיכום לפני עדכון פרופילים - {aname}*",
         "─" * 28,
         f"👥 סה\"כ לקוחות: {total}",
         f"🟢 יעודכנו (אין תמונה): {will_update}",
@@ -3896,21 +3912,23 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
     if not to_process:
         return f"❌ לא נמצאו תמונות בבית *{aname}*", {}
 
+    if skip_ids is None:
+        skip_ids = set()
+
     updated = []
     failed = []
-
     used_att_ids = {}  # {contact_id: att_id} - מעקב אחר קבצים ששימשו
 
-    # שמור מצב ראשוני לפני התחלת עיבוד - שמור started_at מהקובץ הקודם אם קיים
-    _existing = _load_resume_state()
-    _started_at = _existing.get("started_at", time.time()) if _existing else time.time()
-    _save_resume_state({
+    # שמור מצב ראשוני - started_at נשמר מהקובץ הקודם אם קיים
+    _prev = _load_resume()
+    _started_at = _prev.get("started_at", time.time()) if _prev else time.time()
+    _save_resume({
         "from_number": from_number,
         "account_id": aid,
         "account_name": aname,
         "started_at": _started_at,
         "total": len(to_process),
-        "completed_ids": list(skip_ids),
+        "done_ids": list(skip_ids),
         "status": "running"
     })
 
@@ -3958,22 +3976,22 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
             failed.append(cname)
             _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה: {str(e)[:60]}", from_number)
 
-        # עדכן מצב אחרי כל לקוח - כדי שיוכל להמשיך אחרי רסטרט
-        _save_resume_state({
+        # שמור מצב אחרי כל לקוח
+        _save_resume({
             "from_number": from_number,
             "account_id": aid,
             "account_name": aname,
             "started_at": _started_at,
             "total": len(to_process),
-            "completed_ids": list(skip_ids) + [c["id"] for c, _, _ in to_process[:i]],
+            "done_ids": list(skip_ids) + [c["id"] for c, _, _ in to_process[:i]],
             "last_index": i,
             "status": "running"
         })
 
         time.sleep(0.5)
 
-    # סיכום סופי - מחק מצב אחרי הצלחה
-    _clear_resume_state()
+    # סיכום סופי - מחק קובץ מצב
+    _clear_resume()
     lines = [f"🏠 *סיכום סופי - פרופילים {aname}*", "─" * 28]
     lines.append(f"✅ עודכנו: {len(updated)}")
     if no_image:
@@ -3990,15 +4008,7 @@ def _send_reply(reply: str, from_number: str, original_msg: str = ""):
     full_reply = quote + reply
     parts = split_message(full_reply)
     for i, part in enumerate(parts):
-        try:
-            twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
-        except Exception as twilio_err:
-            print(f"[_send_reply] Twilio error (part {i+1}/{len(parts)}): {twilio_err}")
-            time.sleep(2)  # המתן קצת לפני ניסיון הבא
-            try:
-                twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
-            except Exception as retry_err:
-                print(f"[_send_reply] Retry failed: {retry_err}")
+        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
         if i < len(parts) - 1:
             time.sleep(0.5)
 
@@ -4266,47 +4276,40 @@ def preload_cache():
 
 # הפעל טעינת קאש ברקע
 threading.Thread(target=preload_cache, daemon=True).start()
-# הפעל תזמון דוח יומי ברקע (23:30 כל יום)
+
+## הפעל תזמון דוח יומי ברקע (23:30 כל יום)
 threading.Thread(target=_daily_report_scheduler, daemon=True).start()
 
-# ─── חידוש אוטומטי לפרופיל כללי אחרי רסטרט ──────────────────────────────────
+# ─── חידוש אוטומטי בהפעלה ───────────────────────────────────────────────────────────────
 def _auto_resume_on_startup():
-    """
-    בדיקה בהפעלה: אם יש קובץ מצב של ריצה לא גמורה,
-    מתחיל מחדש את פרופיל כללי מהלקוח שנעצר באמצע.
-    """
+    """בדיקה בהפעלה: אם יש קובץ מצב עם status=running, ממשיך מהנקודה שנעצר."""
     try:
-        time.sleep(8)  # חכה שהשרת יעלה לגמרי לפני בדיקה
-        state = _load_resume_state()
-        if not state or state.get("status") not in ("running",):
-            print("[AutoResume] אין ריצה לא גמורה לחידוש (סטטוס: {state.get('status') if state else 'none'})")
+        time.sleep(10)  # חכה שהשרת יעלה
+        state = _load_resume()
+        if not state or state.get("status") != "running":
             return
 
         from_number = state.get("from_number", "")
         account_id  = state.get("account_id", "")
         account_name = state.get("account_name", "")
-        completed_ids = set(state.get("completed_ids", []))
+        done_ids = set(state.get("done_ids", []))
         last_index = state.get("last_index", 0)
         total = state.get("total", 0)
         started_at = state.get("started_at", 0)
 
         if not from_number or not account_id:
-            print("[AutoResume] מצב חסר פרטים - מדלג")
-            _clear_resume_state()
+            _clear_resume()
             return
 
-        # בדוק שהריצה לא ישנה מדי (2 שעות - אם ישן מדי זה לופ אינסופי)
+        # אם הקובץ ישן מידי (2 שעות) - בטל
         if time.time() - started_at > 7200:
-            print("[AutoResume] קובץ מצב ישן מדי (>2ש) - מדלג")
-            _clear_resume_state()
+            _clear_resume()
             return
 
-        # מנע לופ - סמן את הקובץ כבר-בטיפול לפני הריצה
-        _save_resume_state({**state, "status": "resuming"})
+        # סמן כבר-בטיפול כדי למנוע לופ אם הבוט נעצר שוב
+        _save_resume({**state, "status": "resuming"})
 
-        print(f"[AutoResume] מזוהה ריצה לא גמורה: {account_name} ({last_index}/{total})")
-
-        # שלח הודעה למשתמש
+        print(f"[AutoResume] מחדש פרופיל כללי: {account_name} ({last_index}/{total})")
         _send_reply(
             f"🔄 *חידוש אוטומטי - פרופיל כללי*\n"
             f"🏠 בית: {account_name}\n"
@@ -4315,25 +4318,27 @@ def _auto_resume_on_startup():
             from_number
         )
 
-        # טען את החשבון מזוה
+        # טען את החשבון מזוהו
         token, domain = get_access_token()
-        headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
-        r_acc = requests.get(f"{domain}/crm/v5/Accounts/{account_id}",
-                             headers=headers_z, timeout=20)
+        r_acc = requests.get(
+            f"{domain}/crm/v5/Accounts/{account_id}",
+            headers={"Authorization": f"Zoho-oauthtoken {token}"},
+            timeout=20
+        )
         if r_acc.status_code != 200:
-            _send_reply(f"❌ לא ניתן לטעון חשבון {account_name} ({r_acc.status_code})", from_number)
-            _clear_resume_state()
+            _send_reply(f"❌ לא ניתן לטעון חשבון {account_name}", from_number)
+            _clear_resume()
             return
         account_obj = r_acc.json().get("data", [{}])[0]
 
-        # הרץ מחדש עם דילוג ה-IDs שכבר עובדו
-        result, _ = bulk_profile_update_for_account(account_obj, from_number, skip_ids=completed_ids)
+        # הרץ מחדש עם דילוג IDs שכבר עובדו
+        result, _ = bulk_profile_update_for_account(account_obj, from_number, skip_ids=done_ids)
         _send_reply(result, from_number)
 
     except Exception as e:
         print(f"[AutoResume] שגיאה: {e}")
 
-# threading.Thread(target=_auto_resume_on_startup, daemon=True).start()  # מושבת - גורם ללופ
+threading.Thread(target=_auto_resume_on_startup, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
