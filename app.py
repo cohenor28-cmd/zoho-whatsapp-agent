@@ -2919,6 +2919,36 @@ def handle_command(message, from_number):
         threading.Thread(target=_run_general_passport, daemon=True).start()
         return f"⏳ מתחיל עדכון פספורטים ל-{len(chosen)} בעלי בתים..."
 
+    # === פספורט בית - בחירת כמה בעלי בתים ===
+    if pending == "pick_multi_accounts_passport":
+        accounts_list = session.get("accounts", [])
+        choice = message.strip()
+        if choice == "0":
+            sessions.pop(from_number, None)
+            return "❌ בוטל"
+        import re as _re3
+        if choice.strip() == "הכל":
+            nums = list(range(1, len(accounts_list) + 1))
+        else:
+            nums = [int(x) for x in _re3.findall(r'\d+', choice) if 1 <= int(x) <= len(accounts_list)]
+        if not nums:
+            return f"❓ שלח מספרים בין 1 ל-{len(accounts_list)}, או 0 לביטול"
+        chosen = [accounts_list[i-1] for i in nums]
+        sessions.pop(from_number, None)
+        names = ", ".join(a.get("Account_Name","") for a in chosen)
+        def _run_multi_passport():
+            try:
+                for acc in chosen:
+                    aname = acc.get("Account_Name", "")
+                    _send_reply(f"⏳ מעדכן פספורטים - *{aname}*...", from_number)
+                    result = bulk_passport_update_for_account(acc, from_number)
+                    _send_reply(result, from_number)
+                _send_reply(f"✅ *סיום עדכון פספורטים*\nעודכנו {len(chosen)} בעלי בתים: {names}", from_number)
+            except Exception as e:
+                _send_reply(f"❌ שגיאה: {e}", from_number)
+        threading.Thread(target=_run_multi_passport, daemon=True).start()
+        return f"⏳ מתחיל עדכון פספורטים ל-{len(chosen)} בעלי בתים..."
+
     # === עדכון פספורט בית - כל לקוחות בבית ===
     if msg_s.startswith("פספורט בית ") or msg_s.startswith("עדכון פספורט בית "):
         prefix = "פספורט בית " if msg_s.startswith("פספורט בית ") else "עדכון פספורט בית "
@@ -2928,13 +2958,20 @@ def handle_command(message, from_number):
             if not accounts:
                 return f"❓ לא מצאתי בעל בית בשם *{name_q}*"
             if len(accounts) == 1:
+                # בית אחד - התחל ישירות
                 aname = accounts[0].get("Account_Name", "")
-                sessions[from_number] = {"pending": "confirm_bulk_passport", "account": accounts[0]}
-                return (f"🔍 תעדכן פספורטים לכל לקוחות בית *{aname}*\n"
-                        f"התהליך עובר על כל לקוח שאין לו שם ויזה ומחפש פספורט בקבצים.\n"
-                        f"האם להתחיל?\n1. כן\n2. לא")
-            sessions[from_number] = {"pending": "choose_account_bulk_passport", "accounts": accounts, "name_q": name_q}
-            return _format_account_choice_menu(accounts, "עדכון פספורטים")
+                def _run_single_passport(acc=accounts[0]):
+                    result = bulk_passport_update_for_account(acc, from_number)
+                    _send_reply(result, from_number)
+                threading.Thread(target=_run_single_passport, daemon=True).start()
+                return f"⏳ מתחיל עדכון פספורטים - *{aname}*..."
+            # כמה בתוצאות - אפשר בחירת כמה
+            lines = [f"U0001f3e0 בחר בעלי בתים לעדכון פספורט:"]
+            for j, a in enumerate(accounts, 1):
+                lines.append(f"{j}. {a.get('Account_Name','')}")
+            lines.append("\nשלח מספרים מופרדים בפסיקות (1,3,5) או 'הכל' או 0 לביטול")
+            sessions[from_number] = {"pending": "pick_multi_accounts_passport", "accounts": accounts}
+            return "\n".join(lines)
 
     # === סטטוס לקוח ===
     if msg_s.startswith("סטטוס "):
@@ -3539,21 +3576,13 @@ def bulk_passport_update_for_account(account: dict, from_number: str) -> str:
 
     if not all_contacts:
         return f"❌ לא נמצאו לקוחות בבית *{aname}*"
-
-    # סנן: רק לקוחות שאין להם שם ויזה
-    missing = [c for c in all_contacts if not (c.get("Visa_Name1") or "").strip()]
-    already = len(all_contacts) - len(missing)
-
-    if not missing:
-        return (f"✅ כל {len(all_contacts)} לקוחות בבית *{aname}* כבר יש להם שם ויזה!")
-
+    # עבד על כל הלקוחות (כולל מי שיש לו שם ויזה)
+    missing = all_contacts
     # שלח עדכון ראשון
     _send_reply(
-        f"🔍 מתחיל עיבוד {len(missing)} לקוחות - *{aname}*\n"
-        f"({already} כבר יש שם ויזה, מדלגים)",
+        f"\U0001f50d מתחיל עיבוד {len(missing)} לקוחות - *{aname}*",
         from_number
     )
-
     updated = []
     skipped = []
     failed = []
@@ -3645,8 +3674,6 @@ def bulk_passport_update_for_account(account: dict, from_number: str) -> str:
     if failed:
         lines.append(f"\n❌ שגיאות ({len(failed)}):")
         lines.extend(failed)
-    if already:
-        lines.append(f"\nℹ️ דילגנו על {already} לקוחות - שדה שם הויזה כבר מלא")
     return "\n".join(lines)
 
 
