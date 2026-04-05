@@ -3928,6 +3928,17 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
     for contact in all_contacts:
         cid = contact["id"]
         cname = contact.get("Full_Name", "")
+        # בדוק אם כבר יש פרופיל קיים ב-Zoho - אם כן, דלג
+        if cid not in skip_ids:
+            photo_check = requests.get(f"{domain}/crm/v2/Contacts/{cid}/photo", headers=headers_z)
+            if photo_check.status_code == 200:
+                no_image.append(f"{cname} (כבר יש פרופיל)")
+                time.sleep(0.1)
+                continue
+        else:
+            no_image.append(f"{cname} (כבר עובד)")
+            time.sleep(0.1)
+            continue
         r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z)
         if r.status_code == 200 and r.json().get("data"):
             atts = r.json()["data"]
@@ -3944,12 +3955,14 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
     total = len(all_contacts)
     will_update = len(to_process)
     will_skip = len(no_image)
+    already_has = sum(1 for x in no_image if "כבר יש פרופיל" in x or "כבר עובד" in x)
     summary_lines = [
         f"🔍 *סיכום לפני עדכון פרופילים - {aname}*",
         "─" * 28,
         f"👥 סה\"כ לקוחות: {total}",
         f"🟢 יעודכנו: {will_update}",
-        f"⏩ ידולגו (אין תמונה): {will_skip}",
+        f"⏩ ידולגו (כבר יש פרופיל): {already_has}",
+        f"⏩ ידולגו (אין תמונה): {will_skip - already_has}",
         f"\n⏳ מתחיל עיבוד {will_update} לקוחות...",
     ]
     _send_reply("\n".join(summary_lines), from_number)
