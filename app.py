@@ -3735,6 +3735,105 @@ def _fix_profiles_from_next_attachment(to_fix: list, account: dict, from_number:
     return "\n".join(lines), new_used_att_ids
 
 
+import os as _os
+import json as _json
+import time as _time_mod
+import threading as _threading
+
+_RESUME_DIR = "/tmp/bot_logs"
+
+def _save_resume_state(aid: str, aname: str, from_number: str, completed_ids: set, total: int):
+    """שומר מצב ריצה לאחר כל לקוח מעובד."""
+    try:
+        _os.makedirs(_RESUME_DIR, exist_ok=True)
+        state_file = f"{_RESUME_DIR}/profile_resume_{aid}.json"
+        started_at = _time_mod.time()
+        if _os.path.exists(state_file):
+            try:
+                with open(state_file) as f:
+                    old = _json.load(f)
+                    started_at = old.get("started_at", started_at)
+            except:
+                pass
+        state = {
+            "aid": aid,
+            "aname": aname,
+            "from_number": from_number,
+            "completed_ids": list(completed_ids),
+            "total": total,
+            "started_at": started_at,
+            "status": "running"
+        }
+        with open(state_file, "w") as f:
+            _json.dump(state, f)
+    except Exception:
+        pass
+
+def _clear_resume_state(aid: str):
+    """מוחק קובץ מצב בסיום מוצלח."""
+    try:
+        state_file = f"{_RESUME_DIR}/profile_resume_{aid}.json"
+        if _os.path.exists(state_file):
+            _os.remove(state_file)
+    except:
+        pass
+
+def _auto_resume_on_startup():
+    """בודק אם יש ריצות לא גמורות ומחדש אותן - פעם אחת בלבד."""
+    import time
+    time.sleep(10)
+    try:
+        if not _os.path.exists(_RESUME_DIR):
+            return
+        for fname in _os.listdir(_RESUME_DIR):
+            if not fname.startswith("profile_resume_") or not fname.endswith(".json"):
+                continue
+            state_file = f"{_RESUME_DIR}/{fname}"
+            try:
+                with open(state_file) as f:
+                    state = _json.load(f)
+            except:
+                _os.remove(state_file)
+                continue
+            if state.get("status") != "running":
+                continue
+            age = _time_mod.time() - state.get("started_at", 0)
+            if age > 7200:
+                _os.remove(state_file)
+                continue
+            state["status"] = "resuming"
+            with open(state_file, "w") as f:
+                _json.dump(state, f)
+            aid = state["aid"]
+            aname = state["aname"]
+            from_number = state["from_number"]
+            completed_ids = set(state.get("completed_ids", []))
+            total = state.get("total", 0)
+            done = len(completed_ids)
+            _send_reply(
+                f"\U0001f504 *חידוש אוטומטי - פרופיל כללי*\n"
+                f"\U0001f3e0 בית: {aname}\n"
+                f"\u23f8 נעצר בלקוח {done}/{total}\n"
+                f"\u23f3 ממשיך מלקוח {done+1}...",
+                from_number
+            )
+            try:
+                token, domain = get_access_token()
+                headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+                r = requests.get(f"{domain}/crm/v2/Accounts/{aid}", headers=headers_z)
+                if r.status_code == 200:
+                    accounts = r.json().get("data", [])
+                    if accounts:
+                        bulk_profile_update_for_account(accounts[0], from_number, skip_ids=completed_ids)
+                        return
+            except Exception:
+                pass
+            _os.remove(state_file)
+    except Exception:
+        pass
+
+_threading.Thread(target=_auto_resume_on_startup, daemon=True).start()
+
 def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: set = None) -> str:
     """
     עובר על כל לקוחות של בעל בית ומחפש תמונת פרופיל לפי סדר עדיפויות:
