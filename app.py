@@ -3735,7 +3735,7 @@ def _fix_profiles_from_next_attachment(to_fix: list, account: dict, from_number:
     return "\n".join(lines), new_used_att_ids
 
 
-def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
+def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: set = None) -> str:
     """
     עובר על כל לקוחות של בעל בית ומחפש תמונת פרופיל לפי סדר עדיפויות:
     1. קובץ בשם 'פרופיל' (כולל וריאציות)
@@ -3803,6 +3803,8 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
     aname = account.get("Account_Name", "")
     token, domain = get_access_token()
     headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+    if skip_ids is None:
+        skip_ids = set()
 
     all_contacts = []
     page = 1
@@ -3886,6 +3888,8 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
             if photo_resp.status_code in [200, 201, 202]:
                 updated.append(cname)
                 used_att_ids[cid] = [att['id']]  # שמור את ה-attachment ששימש
+                skip_ids.add(cid)
+                _save_resume_state(aid, aname, from_number, skip_ids, len(to_process))
                 _send_reply(f"✅ [{i}/{len(to_process)}] {cname} - פרופיל עודכן ({reason})", from_number)
             else:
                 failed.append(cname)
@@ -3897,6 +3901,7 @@ def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
         time.sleep(0.5)
 
     # סיכום סופי
+    _clear_resume_state(aid)
     lines = [f"🏠 *סיכום סופי - פרופילים {aname}*", "─" * 28]
     lines.append(f"✅ עודכנו: {len(updated)}")
     if no_image:
