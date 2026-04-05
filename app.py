@@ -2197,6 +2197,346 @@ def handle_command(message, from_number):
             sessions[from_number] = {"pending": "choose_contact_passport", "contacts": contacts, "name_q": name_q}
             return _format_contact_choice_menu(contacts, "עדכון פספורט")
 
+    # === תיקון פרופיל (ללא שם) - בחירת בעל בית מהפעילים ===
+    if msg_s == "תיקון פרופיל":
+        sessions.pop(from_number, None)
+        def _load_active_accounts_fix():
+            try:
+                token2, domain2 = get_access_token()
+                h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
+                import datetime as _dt
+                one_year_ago = (_dt.datetime.utcnow() - _dt.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+                all_accs = []
+                page = 1
+                while True:
+                    r = requests.get(f"{domain2}/crm/v5/Accounts",
+                        headers=h2,
+                        params={"fields": "Account_Name", "per_page": 200, "page": page})
+                    if r.status_code != 200: break
+                    batch = r.json().get("data", [])
+                    if not batch: break
+                    all_accs.extend(batch)
+                    if not r.json().get("info", {}).get("more_records", False): break
+                    page += 1
+                if not all_accs:
+                    _send_reply("\u274c \u05dc\u05d0 \u05e0\u05de\u05e6\u05d0\u05d5 \u05d1\u05e2\u05dc\u05d9 \u05d1\u05ea\u05d9\u05dd", from_number)
+                    return
+                active_accs = []
+                for acc in all_accs:
+                    acc_id = acc.get("id")
+                    try:
+                        inv_r = requests.get(
+                            f"{domain2}/crm/v5/Invoices/search",
+                            headers=h2,
+                            params={
+                                "criteria": f"(Account_Name.id:equals:{acc_id})AND(Created_Time:greater_equal:{one_year_ago})",
+                                "fields": "id",
+                                "per_page": 1
+                            }
+                        )
+                        if inv_r.status_code == 200 and inv_r.json().get("data"):
+                            active_accs.append(acc)
+                    except Exception:
+                        pass
+                if not active_accs:
+                    _send_reply("\u274c \u05dc\u05d0 \u05e0\u05de\u05e6\u05d0\u05d5 \u05d1\u05e2\u05dc\u05d9 \u05d1\u05ea\u05d9\u05dd \u05e4\u05e2\u05d9\u05dc\u05d9\u05dd", from_number)
+                    return
+                active_accs.sort(key=lambda a: a.get("Account_Name", ""))
+                sessions[from_number] = {
+                    "pending": "fix_profile_pick_account",
+                    "accounts": active_accs
+                }
+                all_lines = [f"{j}. {a.get('Account_Name','')}" for j, a in enumerate(active_accs, 1)]
+                footer = "\n\u05e9\u05dc\u05d7 \u05de\u05e1\u05e4\u05e8 \u05d1\u05e2\u05dc \u05d4\u05d1\u05d9\u05ea (0 \u05dc\u05d1\u05d9\u05d8\u05d5\u05dc):"
+                MAX_CHARS = 1400
+                chunks = []
+                current_chunk = ["\U0001f3e0 *\u05ea\u05d9\u05e7\u05d5\u05df \u05e4\u05e8\u05d5\u05e4\u05d9\u05dc - \u05d1\u05d7\u05e8 \u05d1\u05e2\u05dc \u05d1\u05d9\u05ea (\u05e4\u05e2\u05d9\u05dc\u05d9\u05dd):*"]
+                current_len = len(current_chunk[0])
+                for line in all_lines:
+                    if current_len + len(line) + 1 > MAX_CHARS:
+                        chunks.append("\n".join(current_chunk))
+                        current_chunk = []
+                        current_len = 0
+                    current_chunk.append(line)
+                    current_len += len(line) + 1
+                if current_chunk:
+                    chunks.append("\n".join(current_chunk))
+                for i, chunk in enumerate(chunks):
+                    if i == len(chunks) - 1:
+                        _send_reply(chunk + footer, from_number)
+                    else:
+                        _send_reply(chunk, from_number)
+            except Exception as e:
+                _send_reply(f"\u274c \u05e9\u05d2\u05d9\u05d0\u05d4: {e}", from_number)
+        threading.Thread(target=_load_active_accounts_fix, daemon=True).start()
+        return "\u23f3 \u05d8\u05d5\u05e2\u05df \u05e8\u05e9\u05d9\u05de\u05ea \u05d1\u05e2\u05dc\u05d9 \u05d1\u05ea\u05d9\u05dd \u05e4\u05e2\u05d9\u05dc\u05d9\u05dd..."
+
+    # === תיקון פרופיל - בחירת בעל בית ===
+    if pending == "fix_profile_pick_account":
+        accounts = session.get("accounts", [])
+        choice = message.strip()
+        if choice == "0":
+            sessions.pop(from_number, None)
+            return "\u274c \u05d1\u05d5\u05d8\u05dc"
+        if not choice.isdigit() or not (1 <= int(choice) <= len(accounts)):
+            return f"\u2753 \u05e9\u05dc\u05d7 \u05de\u05e1\u05e4\u05e8 \u05d1\u05d9\u05df 1 \u05dc-{len(accounts)}, \u05d0\u05d5 0 \u05dc\u05d1\u05d9\u05d8\u05d5\u05dc"
+        idx = int(choice) - 1
+        account = accounts[idx]
+        aname = account.get("Account_Name", "")
+        sessions.pop(from_number, None)
+        def _load_contacts_for_fix(account=account, aname=aname):
+            try:
+                token2, domain2 = get_access_token()
+                h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
+                acc_id = account.get("id")
+                rc = requests.get(f"{domain2}/crm/v2/Contacts/search",
+                    headers=h2,
+                    params={"criteria": f"(Account_Name:equals:{acc_id})", "fields": "Full_Name,id", "per_page": 200})
+                contacts = rc.json().get("data", []) if rc.status_code == 200 else []
+                if not contacts:
+                    _send_reply(f"\u274c \u05dc\u05d0 \u05e0\u05de\u05e6\u05d0\u05d5 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea \u05d1\u05d1\u05d9\u05ea {aname}", from_number)
+                    return
+                contacts.sort(key=lambda c: c.get("Full_Name", ""))
+                sessions[from_number] = {
+                    "pending": "fix_profile_pick_contacts",
+                    "account": account,
+                    "contacts": contacts
+                }
+                all_lines = [f"{j}. {c.get('Full_Name','')}" for j, c in enumerate(contacts, 1)]
+                footer = "\n\u05e9\u05dc\u05d7 \u05de\u05e1\u05e4\u05e8\u05d9\u05dd \u05de\u05d5\u05e4\u05e8\u05d3\u05d9\u05dd \u05d1\u05e4\u05e1\u05d9\u05e7\u05d5\u05ea (1,3,5) \u05d0\u05d5 '\u05d4\u05db\u05dc', \u05d0\u05d5 0 \u05dc\u05d1\u05d9\u05d8\u05d5\u05dc:"
+                MAX_CHARS = 1400
+                chunks = []
+                current_chunk = [f"\U0001f465 *\u05dc\u05e7\u05d5\u05d7\u05d5\u05ea \u05e9\u05dc {aname}:*"]
+                current_len = len(current_chunk[0])
+                for line in all_lines:
+                    if current_len + len(line) + 1 > MAX_CHARS:
+                        chunks.append("\n".join(current_chunk))
+                        current_chunk = []
+                        current_len = 0
+                    current_chunk.append(line)
+                    current_len += len(line) + 1
+                if current_chunk:
+                    chunks.append("\n".join(current_chunk))
+                for i, chunk in enumerate(chunks):
+                    if i == len(chunks) - 1:
+                        _send_reply(chunk + footer, from_number)
+                    else:
+                        _send_reply(chunk, from_number)
+            except Exception as e:
+                _send_reply(f"\u274c \u05e9\u05d2\u05d9\u05d0\u05d4: {e}", from_number)
+        threading.Thread(target=_load_contacts_for_fix, daemon=True).start()
+        return f"\u23f3 \u05d8\u05d5\u05e2\u05df \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea \u05e9\u05dc {aname}..."
+
+    # === תיקון פרופיל - בחירת לקוחות ===
+    if pending == "fix_profile_pick_contacts":
+        account = session.get("account", {})
+        contacts = session.get("contacts", [])
+        aname = account.get("Account_Name", "")
+        choice = message.strip()
+        if choice == "0":
+            sessions.pop(from_number, None)
+            return "\u274c \u05d1\u05d5\u05d8\u05dc"
+        import re as _re_fp
+        if choice.strip() == "\u05d4\u05db\u05dc":
+            nums = list(range(1, len(contacts) + 1))
+        else:
+            nums = [int(x) for x in _re_fp.findall(r'\d+', choice) if 1 <= int(x) <= len(contacts)]
+        if not nums:
+            return f"\u2753 \u05e9\u05dc\u05d7 \u05de\u05e1\u05e4\u05e8\u05d9\u05dd \u05d1\u05d9\u05df 1 \u05dc-{len(contacts)}, \u05d0\u05d5 0 \u05dc\u05d1\u05d9\u05d8\u05d5\u05dc"
+        chosen = [contacts[i-1] for i in nums]
+        sessions.pop(from_number, None)
+        def _load_files_for_chosen(chosen=chosen, account=account, aname=aname):
+            try:
+                token2, domain2 = get_access_token()
+                h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
+                img_exts = ('.jpg','.jpeg','.png','.webp','.heic','.heif')
+                contacts_with_files = []
+                for c in chosen:
+                    cid = c["id"]
+                    r = requests.get(f"{domain2}/crm/v2/Contacts/{cid}/Attachments", headers=h2)
+                    atts = r.json().get("data", []) if r.status_code == 200 else []
+                    image_atts = [a for a in atts if a.get("File_Name","").lower().endswith(img_exts)]
+                    contacts_with_files.append((c, image_atts))
+                lines = [f"\U0001f4cb *\u05e7\u05d1\u05e6\u05d9 \u05ea\u05de\u05d5\u05e0\u05d4 - {aname}:*", ""]
+                for c, image_atts in contacts_with_files:
+                    cname = c.get("Full_Name", "")
+                    if not image_atts:
+                        lines.append(f"*{cname}*: \u05d0\u05d9\u05df \u05ea\u05de\u05d5\u05e0\u05d5\u05ea")
+                    else:
+                        lines.append(f"*{cname}*:")
+                        for j, a in enumerate(image_atts, 1):
+                            lines.append(f"  {j}. {a.get('File_Name','')}")
+                lines.append("")
+                lines.append("\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05d9\u05d7\u05d9\u05d3: [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7] [\u05de\u05e1\u05e4\u05e8 \u05e7\u05d5\u05d1\u05e5]")
+                lines.append("  \u05dc\u05d3\u05d5\u05d2\u05de\u05d0: \u05d9\u05d5\u05e1\u05d9 \u05db\u05d4\u05df 2")
+                lines.append("\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05de\u05e8\u05d5\u05d1\u05d4 (\u05d0\u05d5\u05ea\u05d5 \u05e7\u05d5\u05d1\u05e5): [\u05de\u05e1\u05e4\u05e8\u05d9 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea] \u05e7\u05d5\u05d1\u05e5 [\u05de\u05e1\u05e4\u05e8]")
+                lines.append("  \u05dc\u05d3\u05d5\u05d2\u05de\u05d0: 1,3,5 \u05e7\u05d5\u05d1\u05e5 2")
+                lines.append("0 = \u05d1\u05d9\u05d8\u05d5\u05dc")
+                sessions[from_number] = {
+                    "pending": "fix_profile_choose_file",
+                    "account": account,
+                    "contacts_with_files": contacts_with_files
+                }
+                MAX_CHARS = 1400
+                msg = "\n".join(lines)
+                parts = [msg[i:i+MAX_CHARS] for i in range(0, len(msg), MAX_CHARS)]
+                for part in parts:
+                    _send_reply(part, from_number)
+            except Exception as e:
+                _send_reply(f"\u274c \u05e9\u05d2\u05d9\u05d0\u05d4: {e}", from_number)
+        threading.Thread(target=_load_files_for_chosen, daemon=True).start()
+        names = ", ".join(c.get("Full_Name","") for c in chosen)
+        return f"\u23f3 \u05d8\u05d5\u05e2\u05df \u05e7\u05d1\u05e6\u05d9\u05dd \u05e2\u05d1\u05d5\u05e8: {names}..."
+
+    # === תיקון פרופיל - בחירת קובץ (יחיד או מרובה) ===
+    if pending == "fix_profile_choose_file":
+        account = session.get("account", {})
+        contacts_with_files = session.get("contacts_with_files", [])
+        aname = account.get("Account_Name", "")
+        choice = message.strip()
+        if choice == "0":
+            sessions.pop(from_number, None)
+            return "\u274c \u05d1\u05d5\u05d8\u05dc"
+        import re as _re_fp2
+        # תיקון מרובה: "1,3,5 קובץ 2" או "הכל קובץ 2"
+        multi_match = _re_fp2.match(r'^(\u05d4\u05db\u05dc|[\d,\s]+)\s+\u05e7\u05d5\u05d1\u05e5\s+(\d+)$', choice)
+        if multi_match:
+            sel_str = multi_match.group(1).strip()
+            file_num = int(multi_match.group(2))
+            if sel_str == "\u05d4\u05db\u05dc":
+                sel_nums = list(range(1, len(contacts_with_files) + 1))
+            else:
+                sel_nums = [int(x) for x in _re_fp2.findall(r'\d+', sel_str) if 1 <= int(x) <= len(contacts_with_files)]
+            if not sel_nums:
+                return "\u2753 \u05de\u05e1\u05e4\u05e8\u05d9 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea \u05dc\u05d0 \u05ea\u05e7\u05d9\u05e0\u05d9\u05dd"
+            to_update = []
+            for n in sel_nums:
+                c, image_atts = contacts_with_files[n-1]
+                if 1 <= file_num <= len(image_atts):
+                    to_update.append((c, image_atts[file_num-1]))
+                else:
+                    to_update.append((c, None))
+            sessions.pop(from_number, None)
+            def _do_multi_fix(to_update=to_update, account=account, aname=aname, contacts_with_files=contacts_with_files, file_num=file_num):
+                try:
+                    token2, domain2 = get_access_token()
+                    h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
+                    for c, att in to_update:
+                        cname = c.get("Full_Name", "")
+                        cid = c["id"]
+                        if att is None:
+                            _send_reply(f"\u26a0\ufe0f {cname}: \u05e7\u05d5\u05d1\u05e5 {file_num} \u05dc\u05d0 \u05e7\u05d9\u05d9\u05dd", from_number)
+                            continue
+                        r2 = requests.get(f"{domain2}/crm/v2/Contacts/{cid}/Attachments/{att['id']}", headers=h2)
+                        if r2.status_code != 200:
+                            _send_reply(f"\u274c {cname}: \u05dc\u05d0 \u05d4\u05e6\u05dc\u05d7\u05ea\u05d9 \u05dc\u05d4\u05d5\u05e8\u05d9\u05d3 {att['File_Name']}", from_number)
+                            continue
+                        face_bytes, face_dbg = _crop_face_center(r2.content)
+                        if not face_bytes:
+                            _send_reply(f"\u26a0\ufe0f {cname}: \u05d7\u05d9\u05ea\u05d5\u05da \u05e4\u05e0\u05d9\u05dd \u05e0\u05db\u05e9\u05dc ({face_dbg[:50]})", from_number)
+                            continue
+                        photo_resp = requests.post(
+                            f"{domain2}/crm/v2/Contacts/{cid}/photo",
+                            headers=h2,
+                            files={"file": ("profile.jpg", face_bytes, "image/jpeg")}
+                        )
+                        if photo_resp.status_code in [200, 201, 202]:
+                            _send_reply(f"\u2705 {cname}: \u05e2\u05d5\u05d3\u05db\u05df \u05de-{att['File_Name']}", from_number)
+                        else:
+                            _send_reply(f"\u274c {cname}: \u05e9\u05d2\u05d9\u05d0\u05d4 Zoho ({photo_resp.status_code})", from_number)
+                        import time as _t; _t.sleep(0.3)
+                    # הצג שוב את הרשימה לתיקון נוסף
+                    lines = [f"\U0001f4cb *\u05e7\u05d1\u05e6\u05d9 \u05ea\u05de\u05d5\u05e0\u05d4 - {aname}:*", ""]
+                    for cc, image_atts2 in contacts_with_files:
+                        ccname = cc.get("Full_Name", "")
+                        if not image_atts2:
+                            lines.append(f"*{ccname}*: \u05d0\u05d9\u05df \u05ea\u05de\u05d5\u05e0\u05d5\u05ea")
+                        else:
+                            lines.append(f"*{ccname}*:")
+                            for j, a in enumerate(image_atts2, 1):
+                                lines.append(f"  {j}. {a.get('File_Name','')}")
+                    lines.append("")
+                    lines.append("\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05d9\u05d7\u05d9\u05d3: [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7] [\u05de\u05e1\u05e4\u05e8 \u05e7\u05d5\u05d1\u05e5]")
+                    lines.append("\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05de\u05e8\u05d5\u05d1\u05d4: [\u05de\u05e1\u05e4\u05e8\u05d9 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea] \u05e7\u05d5\u05d1\u05e5 [\u05de\u05e1\u05e4\u05e8]")
+                    lines.append("0 = \u05e1\u05d9\u05d5\u05dd")
+                    sessions[from_number] = {
+                        "pending": "fix_profile_choose_file",
+                        "account": account,
+                        "contacts_with_files": contacts_with_files
+                    }
+                    _send_reply("\n".join(lines), from_number)
+                except Exception as e:
+                    _send_reply(f"\u274c \u05e9\u05d2\u05d9\u05d0\u05d4: {e}", from_number)
+            threading.Thread(target=_do_multi_fix, daemon=True).start()
+            return f"\u23f3 \u05de\u05e2\u05d3\u05db\u05df {len(to_update)} \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea \u05e2\u05dd \u05e7\u05d5\u05d1\u05e5 {file_num}..."
+        # תיקון יחיד: "יוסי כהן 2"
+        single_match = _re_fp2.match(r'^(.+?)\s+(\d+)$', choice)
+        if single_match:
+            name_part = single_match.group(1).strip()
+            file_num = int(single_match.group(2))
+            matched = [(i, c, atts) for i, (c, atts) in enumerate(contacts_with_files)
+                       if name_part.lower() in c.get("Full_Name","").lower()]
+            if not matched:
+                return f"\u2753 \u05dc\u05d0 \u05de\u05e6\u05d0\u05ea\u05d9 \u05dc\u05e7\u05d5\u05d7 \u05d1\u05e9\u05dd '{name_part}'"
+            if len(matched) > 1:
+                names = ", ".join(c.get("Full_Name","") for _, c, _ in matched)
+                return f"\u2753 \u05e0\u05de\u05e6\u05d0\u05d5 \u05db\u05de\u05d4 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea: {names}. \u05e9\u05dc\u05d7 \u05e9\u05dd \u05de\u05d3\u05d5\u05d9\u05e7 \u05d9\u05d5\u05ea\u05e8."
+            _, c, image_atts = matched[0]
+            cname = c.get("Full_Name", "")
+            cid = c["id"]
+            if not image_atts:
+                return f"\u274c {cname}: \u05d0\u05d9\u05df \u05ea\u05de\u05d5\u05e0\u05d5\u05ea"
+            if not (1 <= file_num <= len(image_atts)):
+                return f"\u2753 {cname}: \u05e7\u05d5\u05d1\u05e5 {file_num} \u05dc\u05d0 \u05e7\u05d9\u05d9\u05dd (\u05d9\u05e9 {len(image_atts)} \u05e7\u05d1\u05e6\u05d9\u05dd)"
+            att = image_atts[file_num - 1]
+            sessions.pop(from_number, None)
+            def _do_single_fix(c=c, att=att, cname=cname, cid=cid, account=account, aname=aname, contacts_with_files=contacts_with_files):
+                try:
+                    token2, domain2 = get_access_token()
+                    h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
+                    r2 = requests.get(f"{domain2}/crm/v2/Contacts/{cid}/Attachments/{att['id']}", headers=h2)
+                    if r2.status_code != 200:
+                        _send_reply(f"\u274c \u05dc\u05d0 \u05d4\u05e6\u05dc\u05d7\u05ea\u05d9 \u05dc\u05d4\u05d5\u05e8\u05d9\u05d3 {att['File_Name']}", from_number)
+                        return
+                    face_bytes, face_dbg = _crop_face_center(r2.content)
+                    if not face_bytes:
+                        _send_reply(f"\u26a0\ufe0f {cname}: \u05d7\u05d9\u05ea\u05d5\u05da \u05e4\u05e0\u05d9\u05dd \u05e0\u05db\u05e9\u05dc ({face_dbg[:50]})", from_number)
+                    else:
+                        photo_resp = requests.post(
+                            f"{domain2}/crm/v2/Contacts/{cid}/photo",
+                            headers=h2,
+                            files={"file": ("profile.jpg", face_bytes, "image/jpeg")}
+                        )
+                        if photo_resp.status_code in [200, 201, 202]:
+                            _send_reply(f"\u2705 {cname}: \u05e2\u05d5\u05d3\u05db\u05df \u05de-{att['File_Name']}", from_number)
+                        else:
+                            _send_reply(f"\u274c {cname}: \u05e9\u05d2\u05d9\u05d0\u05d4 Zoho ({photo_resp.status_code})", from_number)
+                    # הצג שוב את הרשימה לתיקון נוסף
+                    lines = [f"\U0001f4cb *\u05e7\u05d1\u05e6\u05d9 \u05ea\u05de\u05d5\u05e0\u05d4 - {aname}:*", ""]
+                    for cc, image_atts2 in contacts_with_files:
+                        ccname = cc.get("Full_Name", "")
+                        if not image_atts2:
+                            lines.append(f"*{ccname}*: \u05d0\u05d9\u05df \u05ea\u05de\u05d5\u05e0\u05d5\u05ea")
+                        else:
+                            lines.append(f"*{ccname}*:")
+                            for j, a in enumerate(image_atts2, 1):
+                                lines.append(f"  {j}. {a.get('File_Name','')}")
+                    lines.append("")
+                    lines.append("\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05d9\u05d7\u05d9\u05d3: [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7] [\u05de\u05e1\u05e4\u05e8 \u05e7\u05d5\u05d1\u05e5]")
+                    lines.append("\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05de\u05e8\u05d5\u05d1\u05d4: [\u05de\u05e1\u05e4\u05e8\u05d9 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea] \u05e7\u05d5\u05d1\u05e5 [\u05de\u05e1\u05e4\u05e8]")
+                    lines.append("0 = \u05e1\u05d9\u05d5\u05dd")
+                    sessions[from_number] = {
+                        "pending": "fix_profile_choose_file",
+                        "account": account,
+                        "contacts_with_files": contacts_with_files
+                    }
+                    _send_reply("\n".join(lines), from_number)
+                except Exception as e:
+                    _send_reply(f"\u274c \u05e9\u05d2\u05d9\u05d0\u05d4: {e}", from_number)
+            threading.Thread(target=_do_single_fix, daemon=True).start()
+            return f"\u23f3 \u05de\u05e2\u05d3\u05db\u05df \u05e4\u05e8\u05d5\u05e4\u05d9\u05dc \u05e9\u05dc {cname}..."
+        return "\u2753 \u05e4\u05d5\u05e8\u05de\u05d8 \u05dc\u05d0 \u05de\u05d5\u05db\u05e8.\n\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05d9\u05d7\u05d9\u05d3: [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7] [\u05de\u05e1\u05e4\u05e8 \u05e7\u05d5\u05d1\u05e5]\n\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05de\u05e8\u05d5\u05d1\u05d4: [\u05de\u05e1\u05e4\u05e8\u05d9 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea] \u05e7\u05d5\u05d1\u05e5 [\u05de\u05e1\u05e4\u05e8]\n0 = \u05d1\u05d9\u05d8\u05d5\u05dc"
+
     # === תיקון פרופיל [שם לקוח] ===
     if msg_s.startswith("תיקון פרופיל "):
         name_q = msg_s[len("תיקון פרופיל "):].strip()
