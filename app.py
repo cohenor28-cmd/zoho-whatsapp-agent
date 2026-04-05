@@ -43,6 +43,7 @@ _product_cache = {
 
 # ─── Session memory (per phone number) ────────────────────────────────────────
 sessions = {}
+cancel_flags = {}  # from_number -> True אם המשתמש ביקש ביטול
 
 # ──# ─── יומן פעולות יומי (קובץ קבוע) ──────────────────────────────────
 LOG_DIR = "/tmp/bot_logs"
@@ -2145,7 +2146,8 @@ def handle_command(message, from_number):
     # === ביטול פעולה ===
     if message.strip() in ["ביטול", "ביטול", "cancel"]:
         sessions.pop(from_number, None)
-        return "✅ בוטל! אפשר לשלוח פקודה חדשה."
+        cancel_flags[from_number] = True
+        return "✅ בוטל! פעולה פעילה תעצור בקרוב."
 
     # === עזרה ===
     if message.strip() in ["עזרה", "עזר", "help"]:
@@ -3632,13 +3634,17 @@ def bulk_passport_update_for_account(account: dict, from_number: str) -> str:
     updated = []
     skipped = []
     failed = []
-
+    cancel_flags.pop(from_number, None)  # נקה דגל ביטול ישן
     for contact in missing:
+        # בדוק אם המשתמש ביקש ביטול
+        if cancel_flags.get(from_number):
+            cancel_flags.pop(from_number, None)
+            _send_reply(f"⛔ עיבוד פספורט בוטל - *{aname}*\nעודכנו: {len(updated)}, דולגו: {len(skipped)}", from_number)
+            return f"⛔ בוטל על ידי המשתמש"
         cname = contact.get("Full_Name", "")
         cid = contact["id"]
-
         # שלוף קבצים מצורפים
-        r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z)
+        r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z, timeout=15)
         if r.status_code != 200 or not r.json().get("data"):
             skipped.append(f"⏩ {cname} - אין קבצים")
             continue
@@ -4405,8 +4411,13 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
     # סרוק כל לקוח ובחר את הקובץ הטוב ביותר
     to_process = []   # [(contact, attachment, reason)]
     no_image = []     # [cname]
-
+    cancel_flags.pop(from_number, None)  # נקה דגל ביטול ישן
     for contact in all_contacts:
+        # בדוק אם המשתמש ביקש ביטול
+        if cancel_flags.get(from_number):
+            cancel_flags.pop(from_number, None)
+            _send_reply(f"⛔ עיבוד פרופיל בוטל - *{aname}*", from_number)
+            return f"⛔ בוטל על ידי המשתמש"
         cid = contact["id"]
         cname = contact.get("Full_Name", "")
         # בדוק אם כבר יש פרופיל קיים ב-Zoho - אם כן, דלג
