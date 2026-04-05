@@ -1728,17 +1728,14 @@ def handle_command(message, from_number):
         if choice in ["1", "כן"]:
             sessions.pop(from_number, None)
             def _run_bulk_profile():
-                try:
-                    result, used_att_ids = bulk_profile_update_for_account(account, from_number)
-                    # שמור את ה-attachment IDs ששימשו כדי שהתיקון ידלג עליהם
-                    sessions[from_number] = {
-                        "pending": "after_bulk_profile",
-                        "account": account,
-                        "used_att_ids": used_att_ids
-                    }
-                    _send_reply(result, from_number)
-                except Exception as e:
-                    _send_reply(f"❌ שגיאה בעדכון פרופילים: {str(e)[:100]}", from_number)
+                result, used_att_ids = bulk_profile_update_for_account(account, from_number)
+                # שמור את ה-attachment IDs ששימשו כדי שהתיקון ידלג עליהם
+                sessions[from_number] = {
+                    "pending": "after_bulk_profile",
+                    "account": account,
+                    "used_att_ids": used_att_ids
+                }
+                _send_reply(result, from_number)
             threading.Thread(target=_run_bulk_profile, daemon=True).start()
             aname = account.get("Account_Name", "")
             return f"⏳ מתחיל עדכון פרופילים - *{aname}*... תקבל עדכון בסיום."
@@ -2417,31 +2414,17 @@ def handle_command(message, from_number):
         sessions.pop(from_number, None)
         names = ", ".join(a.get("Account_Name","") for a in chosen)
         def _run_general_profile():
-            total_updated = 0
-            total_failed = 0
-            for acc in chosen:
-                aname = acc.get("Account_Name", "")
-                try:
+            try:
+                total_updated = 0
+                total_skipped = 0
+                for acc in chosen:
+                    aname = acc.get("Account_Name", "")
                     _send_reply(f"⏳ מעדכן פרופילים - *{aname}*...", from_number)
-                    result, _ = bulk_profile_update_for_account(acc, from_number)
-                    # ספור עדכונים/שגיאות מהתוצאה
-                    if "עודכנו:" in result:
-                        for line in result.split("\n"):
-                            if "עודכנו:" in line:
-                                try: total_updated += int(''.join(filter(str.isdigit, line)))
-                                except: pass
-                            elif "שגיאות:" in line:
-                                try: total_failed += int(''.join(filter(str.isdigit, line)))
-                                except: pass
-                except Exception as e:
-                    _send_reply(f"❌ שגיאה בעיבוד *{aname}*: {str(e)[:80]}", from_number)
-            _send_reply(
-                f"✅ *סיום פרופיל כללי*\n"
-                f"🏠 בעלי בתים: {len(chosen)}\n"
-                f"🟢 סה\"כ עודכנו: {total_updated}\n"
-                + (f"❌ שגיאות: {total_failed}" if total_failed else ""),
-                from_number
-            )
+                    result = bulk_profile_update_for_account(acc, from_number)
+                    _send_reply(result, from_number)
+                _send_reply(f"✅ *סיום פרופיל כללי*\nעודכנו {len(chosen)} בעלי בתים: {names}", from_number)
+            except Exception as e:
+                _send_reply(f"❌ שגיאה: {e}", from_number)
         threading.Thread(target=_run_general_profile, daemon=True).start()
         return f"⏳ מתחיל עדכון פרופילים ל-{len(chosen)} בעלי בתים..."
 
@@ -3588,7 +3571,7 @@ def _scan_profiles_for_account(account: dict) -> tuple:
         page += 1
 
     if not all_contacts:
-        return f"❌ לא נמצאו לקוחות - *{aname}*", {}, []
+        return f"❌ לא נמצאו לקוחות - *{aname}*", []
 
     contacts_data = []
     for contact in all_contacts:
@@ -3738,36 +3721,7 @@ def _fix_profiles_from_next_attachment(to_fix: list, account: dict, from_number:
     return "\n".join(lines), new_used_att_ids
 
 
-# ─── מנגנון חידוש אוטומטי ──────────────────────────────────────────────────────
-_RESUME_FILE = "/tmp/bot_logs/profile_resume.json"
-
-def _save_resume(data: dict):
-    try:
-        os.makedirs("/tmp/bot_logs", exist_ok=True)
-        with open(_RESUME_FILE, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        print(f"[Resume] save error: {e}")
-
-def _load_resume() -> dict:
-    try:
-        if os.path.exists(_RESUME_FILE):
-            with open(_RESUME_FILE) as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
-
-def _clear_resume():
-    try:
-        if os.path.exists(_RESUME_FILE):
-            os.remove(_RESUME_FILE)
-    except Exception:
-        pass
-
-# ─────────────────────────────────────────────────────────────────────────────
-
-def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: set = None) -> str:
+def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
     """
     עובר על כל לקוחות של בעל בית ומחפש תמונת פרופיל לפי סדר עדיפויות:
     1. קובץ בשם 'פרופיל' (כולל וריאציות)
@@ -3850,37 +3804,15 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
         page += 1
 
     if not all_contacts:
-        return f"❌ לא נמצאו לקוחות - *{aname}*", {}
+        return f"❌ לא נמצאו לקוחות - *{aname}*"
 
     # סרוק כל לקוח ובחר את הקובץ הטוב ביותר
     to_process = []   # [(contact, attachment, reason)]
     no_image = []     # [cname]
-    has_photo_already = []  # [cname] - לקוחות שכבר יש תמונת פרופיל
 
-    for scan_idx, contact in enumerate(all_contacts):
+    for contact in all_contacts:
         cid = contact["id"]
         cname = contact.get("Full_Name", "")
-
-        # דלג לקוחות שכבר עובדו (חידוש אוטומטי)
-        if skip_ids and cid in skip_ids:
-            has_photo_already.append(cname)
-            continue
-
-        # רענן טוקן כל 20 לקוחות כדי למנוע תפיגת טוקן
-        if scan_idx % 20 == 0:
-            token, domain = get_access_token()
-            headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
-
-        # בדוק אם כבר יש תמונת פרופיל - אם כן, דלג
-        try:
-            photo_r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/photo", headers=headers_z, timeout=15)
-            if photo_r.status_code == 200 and len(photo_r.content) > 1000:
-                has_photo_already.append(cname)
-                time.sleep(0.1)
-                continue
-        except Exception:
-            pass  # אם הבדיקה נכשלה, ממשיכים לעיבוד
-
         r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z)
         if r.status_code == 200 and r.json().get("data"):
             atts = r.json()["data"]
@@ -3897,101 +3829,60 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
     total = len(all_contacts)
     will_update = len(to_process)
     will_skip = len(no_image)
-    already_have = len(has_photo_already)
     summary_lines = [
         f"🔍 *סיכום לפני עדכון פרופילים - {aname}*",
         "─" * 28,
         f"👥 סה\"כ לקוחות: {total}",
-        f"🟢 יעודכנו (אין תמונה): {will_update}",
-        f"⏩ דולגו (כבר יש פרופיל): {already_have}",
-        f"⏩ דולגו (אין תמונה): {will_skip}",
+        f"🟢 יעודכנו: {will_update}",
+        f"⏩ ידולגו (אין תמונה): {will_skip}",
         f"\n⏳ מתחיל עיבוד {will_update} לקוחות...",
     ]
     _send_reply("\n".join(summary_lines), from_number)
 
     if not to_process:
-        return f"❌ לא נמצאו תמונות בבית *{aname}*", {}
-
-    if skip_ids is None:
-        skip_ids = set()
+        return f"❌ לא נמצאו תמונות בבית *{aname}*"
 
     updated = []
     failed = []
-    used_att_ids = {}  # {contact_id: att_id} - מעקב אחר קבצים ששימשו
 
-    # שמור מצב ראשוני - started_at נשמר מהקובץ הקודם אם קיים
-    _prev = _load_resume()
-    _started_at = _prev.get("started_at", time.time()) if _prev else time.time()
-    _save_resume({
-        "from_number": from_number,
-        "account_id": aid,
-        "account_name": aname,
-        "started_at": _started_at,
-        "total": len(to_process),
-        "done_ids": list(skip_ids),
-        "status": "running"
-    })
+    used_att_ids = {}  # {contact_id: att_id} - מעקב אחר קבצים ששימשו
 
     for i, (contact, att, reason) in enumerate(to_process, 1):
         cname = contact.get("Full_Name", "")
         cid = contact["id"]
 
-        # רענן טוקן כל 20 לקוחות כדי למנוע תפיגת טוקן
-        if i % 20 == 1:
-            token, domain = get_access_token()
-            headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+        r2 = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments/{att['id']}", headers=headers_z)
+        if r2.status_code != 200:
+            failed.append(cname)
+            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה בהורדת קובץ ({r2.status_code})", from_number)
+            continue
+
+        face_bytes, face_dbg = _crop_face_center(r2.content)
+        if not face_bytes:
+            failed.append(cname)
+            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - חיתוך נכשל: {face_dbg[:60]}", from_number)
+            continue
 
         try:
-            r2 = requests.get(
-                f"{domain}/crm/v2/Contacts/{cid}/Attachments/{att['id']}",
-                headers=headers_z, timeout=30
-            )
-            if r2.status_code != 200:
-                failed.append(cname)
-                _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה בהורדת קובץ ({r2.status_code})", from_number)
-                time.sleep(0.3)
-                continue
-
-            face_bytes, face_dbg = _crop_face_center(r2.content)
-            if not face_bytes:
-                failed.append(cname)
-                _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - חיתוך נכשל: {face_dbg[:60]}", from_number)
-                time.sleep(0.3)
-                continue
-
             photo_resp = requests.post(
                 f"{domain}/crm/v2/Contacts/{cid}/photo",
                 headers=headers_z,
-                files={"file": ("profile.jpg", face_bytes, "image/jpeg")},
-                timeout=30
+                files={"file": ("profile.jpg", face_bytes, "image/jpeg")}
             )
             if photo_resp.status_code in [200, 201, 202]:
                 updated.append(cname)
-                used_att_ids[cid] = [att['id']]
+                used_att_ids[cid] = [att['id']]  # שמור את ה-attachment ששימש
                 _send_reply(f"✅ [{i}/{len(to_process)}] {cname} - פרופיל עודכן ({reason})", from_number)
             else:
                 failed.append(cname)
                 _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה ({photo_resp.status_code})", from_number)
         except Exception as e:
             failed.append(cname)
-            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה: {str(e)[:60]}", from_number)
-
-        # שמור מצב אחרי כל לקוח
-        _save_resume({
-            "from_number": from_number,
-            "account_id": aid,
-            "account_name": aname,
-            "started_at": _started_at,
-            "total": len(to_process),
-            "done_ids": list(skip_ids) + [c["id"] for c, _, _ in to_process[:i]],
-            "last_index": i,
-            "status": "running"
-        })
+            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה: {str(e)[:50]}", from_number)
 
         time.sleep(0.5)
 
-    # סיכום סופי - מחק קובץ מצב
-    _clear_resume()
+    # סיכום סופי
     lines = [f"🏠 *סיכום סופי - פרופילים {aname}*", "─" * 28]
     lines.append(f"✅ עודכנו: {len(updated)}")
     if no_image:
@@ -4277,68 +4168,8 @@ def preload_cache():
 # הפעל טעינת קאש ברקע
 threading.Thread(target=preload_cache, daemon=True).start()
 
-## הפעל תזמון דוח יומי ברקע (23:30 כל יום)
+# הפעל תזמון דוח יומי ברקע (23:30 כל יום)
 threading.Thread(target=_daily_report_scheduler, daemon=True).start()
-
-# ─── חידוש אוטומטי בהפעלה ───────────────────────────────────────────────────────────────
-def _auto_resume_on_startup():
-    """בדיקה בהפעלה: אם יש קובץ מצב עם status=running, ממשיך מהנקודה שנעצר."""
-    try:
-        time.sleep(10)  # חכה שהשרת יעלה
-        state = _load_resume()
-        if not state or state.get("status") != "running":
-            return
-
-        from_number = state.get("from_number", "")
-        account_id  = state.get("account_id", "")
-        account_name = state.get("account_name", "")
-        done_ids = set(state.get("done_ids", []))
-        last_index = state.get("last_index", 0)
-        total = state.get("total", 0)
-        started_at = state.get("started_at", 0)
-
-        if not from_number or not account_id:
-            _clear_resume()
-            return
-
-        # אם הקובץ ישן מידי (2 שעות) - בטל
-        if time.time() - started_at > 7200:
-            _clear_resume()
-            return
-
-        # סמן כבר-בטיפול כדי למנוע לופ אם הבוט נעצר שוב
-        _save_resume({**state, "status": "resuming"})
-
-        print(f"[AutoResume] מחדש פרופיל כללי: {account_name} ({last_index}/{total})")
-        _send_reply(
-            f"🔄 *חידוש אוטומטי - פרופיל כללי*\n"
-            f"🏠 בית: {account_name}\n"
-            f"⏸️ נעצר בלקוח {last_index}/{total}\n"
-            f"⏳ ממשיך מלקוח {last_index + 1}...",
-            from_number
-        )
-
-        # טען את החשבון מזוהו
-        token, domain = get_access_token()
-        r_acc = requests.get(
-            f"{domain}/crm/v5/Accounts/{account_id}",
-            headers={"Authorization": f"Zoho-oauthtoken {token}"},
-            timeout=20
-        )
-        if r_acc.status_code != 200:
-            _send_reply(f"❌ לא ניתן לטעון חשבון {account_name}", from_number)
-            _clear_resume()
-            return
-        account_obj = r_acc.json().get("data", [{}])[0]
-
-        # הרץ מחדש עם דילוג IDs שכבר עובדו
-        result, _ = bulk_profile_update_for_account(account_obj, from_number, skip_ids=done_ids)
-        _send_reply(result, from_number)
-
-    except Exception as e:
-        print(f"[AutoResume] שגיאה: {e}")
-
-threading.Thread(target=_auto_resume_on_startup, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
