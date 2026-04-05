@@ -3251,6 +3251,7 @@ def _crop_face_center(img_bytes: bytes):
     """
     import io
     import numpy as np
+    import gc
     from PIL import Image, ImageOps
 
     debug_lines = []
@@ -3263,6 +3264,15 @@ def _crop_face_center(img_bytes: bytes):
         debug_lines.append(f"תמונה: {iw}x{ih}")
 
         arr = np.array(img_pil)
+
+        # הגבל גודל תמונה ל-1200px לחסכון בזיכרון
+        MAX_DIM = 1200
+        if iw > MAX_DIM or ih > MAX_DIM:
+            ratio = MAX_DIM / max(iw, ih)
+            img_pil = img_pil.resize((int(iw * ratio), int(ih * ratio)), Image.LANCZOS)
+            iw, ih = img_pil.size
+            arr = np.array(img_pil)
+            debug_lines.append(f"שוקלל ל: {iw}x{ih}")
 
         best_box = None
         best_conf = 0.0
@@ -3297,6 +3307,8 @@ def _crop_face_center(img_bytes: bytes):
             debug_lines.append("MediaPipe לא מותקן, מנסה OpenCV")
         except Exception as mp_err:
             debug_lines.append(f"MediaPipe שגיאה: {str(mp_err)[:80]}")
+        finally:
+            gc.collect()  # שחרר זיכרון MediaPipe
 
         # fallback: נסה OpenCV אם MediaPipe לא מצא
         if best_box is None:
@@ -3352,6 +3364,8 @@ def _crop_face_center(img_bytes: bytes):
         final.save(buf, format="JPEG", quality=90)
         face_bytes = buf.getvalue()
         debug_lines.append(f"חיתוך הצליח! ({len(face_bytes)//1000}KB)")
+        del arr, img_pil, buf
+        gc.collect()
         return face_bytes, "\n".join(debug_lines)
 
     except Exception as e:
