@@ -2357,31 +2357,42 @@ def handle_command(message, from_number):
                     atts = r.json().get("data", []) if r.status_code == 200 else []
                     image_atts = [a for a in atts if a.get("File_Name","").lower().endswith(img_exts)]
                     contacts_with_files.append((c, image_atts))
-                lines = [f"\U0001f4cb *\u05e7\u05d1\u05e6\u05d9 \u05ea\u05de\u05d5\u05e0\u05d4 - {aname}:*", ""]
-                for c, image_atts in contacts_with_files:
-                    cname = c.get("Full_Name", "")
-                    if not image_atts:
-                        lines.append(f"*{cname}*: \u05d0\u05d9\u05df \u05ea\u05de\u05d5\u05e0\u05d5\u05ea")
-                    else:
-                        lines.append(f"*{cname}*:")
-                        for j, a in enumerate(image_atts, 1):
-                            lines.append(f"  {j}. {a.get('File_Name','')}")
-                lines.append("")
-                lines.append("\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05d9\u05d7\u05d9\u05d3: [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7] [\u05de\u05e1\u05e4\u05e8 \u05e7\u05d5\u05d1\u05e5]")
-                lines.append("  \u05dc\u05d3\u05d5\u05d2\u05de\u05d0: \u05d9\u05d5\u05e1\u05d9 \u05db\u05d4\u05df 2")
-                lines.append("\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05de\u05e8\u05d5\u05d1\u05d4 (\u05d0\u05d5\u05ea\u05d5 \u05e7\u05d5\u05d1\u05e5): [\u05de\u05e1\u05e4\u05e8\u05d9 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea] \u05e7\u05d5\u05d1\u05e5 [\u05de\u05e1\u05e4\u05e8]")
-                lines.append("  \u05dc\u05d3\u05d5\u05d2\u05de\u05d0: 1,3,5 \u05e7\u05d5\u05d1\u05e5 2")
-                lines.append("0 = \u05d1\u05d9\u05d8\u05d5\u05dc")
+                # שמור session לפני שליחת תמונות
                 sessions[from_number] = {
                     "pending": "fix_profile_choose_file",
                     "account": account,
                     "contacts_with_files": contacts_with_files
                 }
-                MAX_CHARS = 1400
-                msg = "\n".join(lines)
-                parts = [msg[i:i+MAX_CHARS] for i in range(0, len(msg), MAX_CHARS)]
-                for part in parts:
-                    _send_reply(part, from_number)
+                # שלח תמונות לוואטסאפ לכל לקוח
+                for c, image_atts in contacts_with_files:
+                    cname = c.get("Full_Name", "")
+                    cid = c["id"]
+                    if not image_atts:
+                        _send_reply(f"*{cname}*: \u05d0\u05d9\u05df \u05ea\u05de\u05d5\u05e0\u05d5\u05ea", from_number)
+                        continue
+                    # שלח כותרת שם לקוח
+                    _send_reply(f"\U0001f464 *{cname}* ({len(image_atts)} \u05ea\u05deונות):", from_number)
+                    for j, a in enumerate(image_atts, 1):
+                        try:
+                            r2 = requests.get(f"{domain2}/crm/v2/Contacts/{cid}/Attachments/{a['id']}", headers=h2, timeout=15)
+                            if r2.status_code == 200:
+                                img_url = _store_temp_image(r2.content, "image/jpeg", ttl=600)
+                                _send_whatsapp_image(img_url, f"{j}. {a.get('File_Name','')}", from_number)
+                                time.sleep(0.5)
+                            else:
+                                _send_reply(f"  {j}. {a.get('File_Name','')} (\u05dc\u05d0 \u05e0\u05d8ען)", from_number)
+                        except Exception as img_e:
+                            _send_reply(f"  {j}. {a.get('File_Name','')} (\u05e9\u05d2\u05d9\u05d0\u05d4: {str(img_e)[:30]})", from_number)
+                        time.sleep(0.3)
+                # שלח הוראות בסוף
+                footer_lines = [
+                    "\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05d9\u05d7\u05d9\u05d3: [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7] [\u05de\u05e1\u05e4\u05e8 \u05e7\u05d5\u05d1\u05e5]",
+                    "  \u05dc\u05d3\u05d5\u05d2\u05de\u05d0: \u05d9\u05d5\u05e1\u05d9 \u05db\u05d4\u05df 2",
+                    "\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05de\u05e8\u05d5\u05d1\u05d4 (\u05d0\u05d5\u05ea\u05d5 \u05e7\u05d5\u05d1\u05e5): [\u05de\u05e1\u05e4\u05e8\u05d9 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea] \u05e7\u05d5\u05d1\u05e5 [\u05de\u05e1\u05e4\u05e8]",
+                    "  \u05dc\u05d3\u05d5\u05d2\u05de\u05d0: 1,3,5 \u05e7\u05d5\u05d1\u05e5 2",
+                    "0 = \u05d1\u05d9\u05d8\u05d5\u05dc"
+                ]
+                _send_reply("\n".join(footer_lines), from_number)
             except Exception as e:
                 _send_reply(f"\u274c \u05e9\u05d2\u05d9\u05d0\u05d4: {e}", from_number)
         threading.Thread(target=_load_files_for_chosen, daemon=True).start()
@@ -4692,6 +4703,47 @@ def preload_cache():
         load_all_products()
     except Exception as e:
         print(f"Preload cache error: {e}")
+
+# ─── Temp image store for WhatsApp media sending ─────────────────────────────
+import uuid as _uuid
+_temp_images = {}  # token -> (bytes, content_type, expires_at)
+
+@app.route("/tmp_img/<token>")
+def serve_temp_image(token):
+    from flask import send_file as _send_file
+    import io as _io
+    entry = _temp_images.get(token)
+    if not entry:
+        return "Not found", 404
+    img_bytes, content_type, expires_at = entry
+    if time.time() > expires_at:
+        _temp_images.pop(token, None)
+        return "Expired", 410
+    return _send_file(_io.BytesIO(img_bytes), mimetype=content_type)
+
+def _store_temp_image(img_bytes: bytes, content_type: str = "image/jpeg", ttl: int = 300) -> str:
+    """שמור תמונה זמנית ומחזיר URL ציבורי"""
+    token = _uuid.uuid4().hex
+    _temp_images[token] = (img_bytes, content_type, time.time() + ttl)
+    railway_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    if railway_url:
+        base = f"https://{railway_url}"
+    else:
+        base = "https://web-production-12a94.up.railway.app"
+    return f"{base}/tmp_img/{token}"
+
+def _send_whatsapp_image(img_url: str, caption: str, to_number: str):
+    """שלח תמונה בוואטסאפ עם כיתוב"""
+    try:
+        twilio_client.messages.create(
+            from_=TWILIO_WHATSAPP_FROM,
+            to=to_number,
+            body=caption,
+            media_url=[img_url]
+        )
+    except Exception as e:
+        print(f"[SEND IMAGE] Error: {e}")
+        _send_reply(f"⚠️ שגיאה בשליחת תמונה: {str(e)[:60]}", to_number)
 
 # הפעל טעינת קאש ברקע
 threading.Thread(target=preload_cache, daemon=True).start()
