@@ -2838,8 +2838,23 @@ def handle_command(message, from_number):
 
     # === פספורט כללי - בחירת בעלי בתים לעדכון ===
     if msg_s == "פספורט כללי":
+        sessions[from_number] = {"pending": "passport_filter_type"}
+        return ("U0001f4ce *פספורט כללי* - בחר סוג בעלי בתים:\n"
+                "1. פעילים (יש חשבונית בשנה אחרונה)\n"
+                "2. לא פעילים\n"
+                "3. הכל\n"
+                "0. ביטול")
+    # === פספורט כללי - קבלת סינון וטעינת בעלי בתים ===
+    if pending == "passport_filter_type":
+        choice_f = message.strip()
+        if choice_f == "0":
+            sessions.pop(from_number, None)
+            return "❌ בוטל"
+        if choice_f not in ("1", "2", "3"):
+            return "❓ שלח 1 (פעילים), 2 (לא פעילים) או 3 (הכל)"
+        filter_mode = {"1": "active", "2": "inactive", "3": "all"}[choice_f]
         sessions.pop(from_number, None)
-        def _load_all_accounts_for_passport():
+        def _load_all_accounts_for_passport(filter_mode=filter_mode):
             try:
                 token2, domain2 = get_access_token()
                 h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
@@ -2859,6 +2874,37 @@ def handle_command(message, from_number):
                 if not all_accs:
                     _send_reply("❌ לא נמצאו בעלי בתים", from_number)
                     return
+                # סינון לפי פעילות חשבוניות
+                if filter_mode in ("active", "inactive"):
+                    import datetime as _dt
+                    one_year_ago = (_dt.datetime.utcnow() - _dt.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+                    _send_reply(f"\U0001f50d בודק פעילות חשבוניות עבור {len(all_accs)} בעלי בתים...", from_number)
+                    filtered = []
+                    for acc in all_accs:
+                        acc_id = acc.get("id")
+                        try:
+                            inv_r = requests.get(
+                                f"{domain2}/crm/v5/Invoices/search",
+                                headers=h2,
+                                params={
+                                    "criteria": f"(Account_Name.id:equals:{acc_id})AND(Created_Time:greater_equal:{one_year_ago})",
+                                    "fields": "id",
+                                    "per_page": 1
+                                }
+                            )
+                            has_recent = inv_r.status_code == 200 and bool(inv_r.json().get("data"))
+                        except Exception:
+                            has_recent = False
+                        if filter_mode == "active" and has_recent:
+                            filtered.append(acc)
+                        elif filter_mode == "inactive" and not has_recent:
+                            filtered.append(acc)
+                    label = "פעילים" if filter_mode == "active" else "לא פעילים"
+                    _send_reply(f"\u2705 נמצאו {len(filtered)} בעלי בתים {label}", from_number)
+                    all_accs = filtered
+                if not all_accs:
+                    _send_reply("❌ לא נמצאו בעלי בתים מתאימים", from_number)
+                    return
                 all_accs.sort(key=lambda a: a.get("Account_Name", ""))
                 sessions[from_number] = {
                     "pending": "pick_accounts_general_passport",
@@ -2868,7 +2914,7 @@ def handle_command(message, from_number):
                 footer = "\nשלח מספרים מופרדים בפסיקות (1,3,5) או 'הכל' לבחירת הכל, או 0 לביטול"
                 MAX_CHARS = 1400
                 chunks = []
-                current_chunk = ["📎 *בחר בעלי בתים לעדכון פספורט:*"]
+                current_chunk = ["\U0001f4ce *בחר בעלי בתים לעדכון פספורט:*"]
                 current_len = len(current_chunk[0])
                 for line in all_lines:
                     if current_len + len(line) + 1 > MAX_CHARS:
