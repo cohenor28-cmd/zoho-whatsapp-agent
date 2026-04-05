@@ -2339,10 +2339,27 @@ def handle_command(message, from_number):
             sessions[from_number] = {"pending": "choose_account_check_profile", "accounts": accounts, "name_q": name_q}
             return _format_account_choice_menu(accounts, "בדיקת פרופילים")
 
-    # === פרופיל כללי - בחירת בעלי בתים לעדכון ===
+    # === פרופיל כללי - בחירת סוג סינון ===
     if msg_s == "פרופיל כללי":
         sessions.pop(from_number, None)
-        def _load_all_accounts_for_profile():
+        sessions[from_number] = {"pending": "profile_filter_type"}
+        return ("\U0001f50d *\u05e4\u05e8\u05d5\u05e4\u05d9\u05dc \u05db\u05dc\u05dc\u05d9 - \u05e1\u05d9\u05e0\u05d5\u05df \u05d1\u05e2\u05dc\u05d9 \u05d1\u05ea\u05d9\u05dd:*\n\n"
+                "1\ufe0f\u20e3 \u05e4\u05e2\u05d9\u05dc\u05d9\u05dd (\u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea \u05d1\u05e9\u05e0\u05d4 \u05d4\u05d0\u05d7\u05e8\u05d5\u05e0\u05d4)\n"
+                "2\ufe0f\u20e3 \u05dc\u05d0 \u05e4\u05e2\u05d9\u05dc\u05d9\u05dd (\u05dc\u05dc\u05d0 \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea \u05d1\u05e9\u05e0\u05d4 \u05d4\u05d0\u05d7\u05e8\u05d5\u05e0\u05d4)\n"
+                "3\ufe0f\u20e3 \u05d4\u05db\u05dc\n\n"
+                "\u05e9\u05dc\u05d7 1, 2 \u05d0\u05d5 3:")
+
+    # === פרופיל כללי - קבלת סינון וטעינת בעלי בתים ===
+    if pending == "profile_filter_type":
+        choice_f = message.strip()
+        if choice_f == "0":
+            sessions.pop(from_number, None)
+            return "❌ בוטל"
+        if choice_f not in ("1", "2", "3"):
+            return "❓ שלח 1 (פעילים), 2 (לא פעילים) או 3 (הכל)"
+        filter_mode = {"1": "active", "2": "inactive", "3": "all"}[choice_f]
+        sessions.pop(from_number, None)
+        def _load_all_accounts_for_profile(filter_mode=filter_mode):
             try:
                 token2, domain2 = get_access_token()
                 h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
@@ -2361,6 +2378,40 @@ def handle_command(message, from_number):
                     page += 1
                 if not all_accs:
                     _send_reply("❌ לא נמצאו בעלי בתים", from_number)
+                    return
+
+                # סינון לפי פעילות חשבוניות
+                if filter_mode in ("active", "inactive"):
+                    import datetime as _dt
+                    one_year_ago = (_dt.datetime.utcnow() - _dt.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+                    _send_reply(f"🔍 בודק פעילות חשבוניות עבור {len(all_accs)} בעלי בתים...", from_number)
+                    filtered = []
+                    for acc in all_accs:
+                        acc_id = acc.get("id")
+                        acc_name = acc.get("Account_Name", "")
+                        try:
+                            inv_r = requests.get(
+                                f"{domain2}/crm/v5/Invoices/search",
+                                headers=h2,
+                                params={
+                                    "criteria": f"(Account_Name.id:equals:{acc_id})AND(Created_Time:greater_equal:{one_year_ago})",
+                                    "fields": "id",
+                                    "per_page": 1
+                                }
+                            )
+                            has_recent = inv_r.status_code == 200 and bool(inv_r.json().get("data"))
+                        except Exception:
+                            has_recent = False
+                        if filter_mode == "active" and has_recent:
+                            filtered.append(acc)
+                        elif filter_mode == "inactive" and not has_recent:
+                            filtered.append(acc)
+                    label = "פעילים" if filter_mode == "active" else "לא פעילים"
+                    _send_reply(f"✅ נמצאו {len(filtered)} בעלי בתים {label}", from_number)
+                    all_accs = filtered
+
+                if not all_accs:
+                    _send_reply("❌ לא נמצאו בעלי בתים מתאימים", from_number)
                     return
                 # מיין לפי שם
                 all_accs.sort(key=lambda a: a.get("Account_Name", ""))
