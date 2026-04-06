@@ -2334,22 +2334,23 @@ def handle_command(message, from_number):
         def _find_duplicates():
             try:
                 import difflib
-                # שלוף כל הלקוחות עם שם ויזה
-                all_contacts = []
+                # שלוף כל הלקוחות (Zoho לא תומך ב-is_not_empty לשדה זה, מסננים בצד שלנו)
+                all_contacts_raw = []
                 page = 1
                 while True:
-                    batch, info = zoho_get_full("Contacts/search", {
-                        "criteria": "(Visa_Name1:is_not_empty:true)",
+                    batch, info = zoho_get_full("Contacts", {
                         "fields": "Full_Name,Visa_Name1,Account_Name,id,Created_Time",
                         "per_page": 200,
                         "page": page
                     })
                     if not batch:
                         break
-                    all_contacts.extend(batch)
+                    all_contacts_raw.extend(batch)
                     if not info.get("more_records", False):
                         break
                     page += 1
+                # סנן רק לקוחות עם שם ויזה
+                all_contacts = [c for c in all_contacts_raw if (c.get("Visa_Name1") or "").strip()]
                 if not all_contacts:
                     _send_reply("❌ לא נמצאו לקוחות עם שם ויזה", from_number)
                     return
