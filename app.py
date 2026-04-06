@@ -2430,6 +2430,7 @@ def handle_command(message, from_number):
                 token, domain = get_access_token()
                 headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
                 results = []
+                discarded_contacts = []
                 for c1, c2, ratio in pairs:
                     # קבע מי ישאר (חשבוניות אחרונות יותר) ומי יסומן
                     inv1 = zoho_get("Invoices/search", {"criteria": f"(Contact_Name:equals:{c1['id']})", "fields": "id,Created_Time", "per_page": 200})
@@ -2522,15 +2523,53 @@ def handle_command(message, from_number):
                                 moved_notes += 1
                     # 4. סמן את הלקוח הישן כלא פעיל
                     zoho_put(f"Contacts/{discard_id}", {"data": [{"id": discard_id, "Contact_Status": "לא פעיל"}]})
+                    discarded_contacts.append({"id": discard_id, "name": discard.get("Full_Name", "")})
                     results.append(
                         f"✅ מוזג: *{discard.get('Full_Name')}* → *{keep.get('Full_Name')}*\n"
                         f"   חשבוניות: {moved_inv} | תשלומים: {moved_payments} | קבצים: {moved_att} | הערות: {moved_notes}"
                     )
-                _send_reply("🔀 *סיכום מיזוג:*\n" + "\n".join(results), from_number)
+                summary = "🔀 *סיכום מיזוג:*\n" + "\n".join(results)
+                # שאל אם למחוק את הלקוחות הישנים
+                if discarded_contacts:
+                    names_list = "\n".join(f"  • {c['name']}" for c in discarded_contacts)
+                    summary += f"\n\n🗑️ *הלקוחות הישנים סומנו כלא פעילים:*\n{names_list}\n\nהאם למחוק אותם לגמרי מ-Zoho?\nשלח *כן* למחיקה או כל דבר אחר לביטול"
+                    sessions[from_number] = {"pending": "confirm_delete_merged", "discarded_contacts": discarded_contacts}
+                _send_reply(summary, from_number)
             except Exception as e:
                 _send_reply(f"❌ שגיאה במיזוג: {e}", from_number)
         threading.Thread(target=_do_merge, daemon=True).start()
         return "⏳ מיזוג מתבצע..."
+
+    # === אישור מחיקת לקוחות ישנים אחרי מיזוג ===
+    if pending == "confirm_delete_merged":
+        discarded_contacts = sessions[from_number].get("discarded_contacts", [])
+        sessions.pop(from_number, None)
+        if msg_s not in ["כן", "yes", "y"]:
+            return "✅ בוטל - הלקוחות הישנים נשמרו כלא פעילים"
+        _send_reply("⏳ מוחק לקוחות ישנים...", from_number)
+        def _do_delete_merged():
+            try:
+                deleted = []
+                failed = []
+                for c in discarded_contacts:
+                    res = zoho_delete(f"Contacts/{c['id']}")
+                    code = (res.get("data", [{}])[0].get("code") or "") if res.get("data") else ""
+                    if code == "SUCCESS":
+                        deleted.append(c["name"])
+                    else:
+                        failed.append(c["name"])
+                lines = [f"🗑️ *סיכום מחיקה:*"]
+                if deleted:
+                    lines.append("✅ נמחקו:")
+                    lines.extend(f"  • {n}" for n in deleted)
+                if failed:
+                    lines.append("❌ נכשלו:")
+                    lines.extend(f"  • {n}" for n in failed)
+                _send_reply("\n".join(lines), from_number)
+            except Exception as e:
+                _send_reply(f"❌ שגיאה במחיקה: {e}", from_number)
+        threading.Thread(target=_do_delete_merged, daemon=True).start()
+        return "⏳ מוחק..."
 
     # === תיקון פרופיל (ללא שם) - בחירת בעל בית מהפעילים ===
     if msg_s == "תיקון פרופיל":
