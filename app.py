@@ -1247,6 +1247,7 @@ MAIN_MENU_TEXT = ("""
 17. חובות פתוחים
 🔀 *כלים*
 18. מיזוג לקוחות
+19. חסר פספורט
 ────────────────────────────
 💡 לפרטים נוספים כתוב *עזרה*
 """)
@@ -2200,6 +2201,120 @@ def handle_command(message, from_number):
             # כמה לקוחות - הצג תפריט בחירה
             sessions[from_number] = {"pending": "choose_contact_passport", "contacts": contacts, "name_q": name_q}
             return _format_contact_choice_menu(contacts, "עדכון פספורט")
+
+    # === חסר פספורט - סריקת לקוחות פעילים ללא שם ויזה ===
+    if msg_s == "חסר פספורט":
+        sessions.pop(from_number, None)
+        _send_reply("⏳ סורק לקוחות פעילים ללא פספורט...", from_number)
+        def _find_missing_passport():
+            try:
+                import datetime as _dt
+                token, domain = get_access_token()
+                headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+                one_year_ago = (_dt.datetime.utcnow() - _dt.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+                # טען את כל בעלי הבתים
+                all_accounts = []
+                page = 1
+                while True:
+                    r = requests.get(f"{domain}/crm/v5/Accounts",
+                        headers=headers_z,
+                        params={"fields": "Account_Name,id", "per_page": 200, "page": page})
+                    if r.status_code != 200: break
+                    batch = r.json().get("data", [])
+                    if not batch: break
+                    all_accounts.extend(batch)
+                    if not r.json().get("info", {}).get("more_records"): break
+                    page += 1
+                if not all_accounts:
+                    _send_reply("❌ לא נמצאו בעלי בתים", from_number)
+                    return
+                total_missing = 0
+                accounts_with_missing = 0
+                for acc in all_accounts:
+                    acc_id = acc.get("id")
+                    acc_name = acc.get("Account_Name", "")
+                    # טען לקוחות של בעל הבית
+                    contacts_page = 1
+                    contacts = []
+                    while True:
+                        rc = requests.get(f"{domain}/crm/v5/Contacts/search",
+                            headers=headers_z,
+                            params={"criteria": f"(Account_Name.id:equals:{acc_id})",
+                                    "fields": "Full_Name,Visa_Name1,id",
+                                    "per_page": 200, "page": contacts_page})
+                        if rc.status_code != 200: break
+                        batch_c = rc.json().get("data", [])
+                        if not batch_c: break
+                        contacts.extend(batch_c)
+                        if not rc.json().get("info", {}).get("more_records"): break
+                        contacts_page += 1
+                    # סנן: לקוחות ללא שם ויזה עם חשבונית בשנה האחרונה
+                    missing_names = []
+                    for c in contacts:
+                        visa = c.get("Visa_Name1", "") or ""
+                        if visa.strip():
+                            continue  # יש שם ויזה - דלג
+                        c_id = c.get("id")
+                        # בדוק אם יש חשבונית בשנה האחרונה
+                        try:
+                            ri = requests.get(
+                                f"{domain}/crm/v5/Invoices/search",
+                                headers=headers_z,
+                                params={
+                                    "criteria": f"(Contact_Name.id:equals:{c_id})AND(Created_Time:greater_equal:{one_year_ago})",
+                                    "fields": "id", "per_page": 1
+                                }, timeout=15)
+                            has_recent = ri.status_code == 200 and bool(ri.json().get("data"))
+                        except Exception:
+                            has_recent = False
+                        if has_recent:
+                            missing_names.append(c.get("Full_Name", ""))
+                    if not missing_names:
+                        continue
+                    total_missing += len(missing_names)
+                    accounts_with_missing += 1
+                    # בדוק אם יש כבר הערה "חסר פספורט" ב-Account
+                    note_content = "חסר פספורט:\n" + "\n".join(f"• {n}" for n in missing_names)
+                    try:
+                        rn = requests.get(f"{domain}/crm/v2/Accounts/{acc_id}/Notes",
+                            headers=headers_z, timeout=15)
+                        existing_note_id = None
+                        if rn.status_code == 200:
+                            for note in rn.json().get("data", []):
+                                if "חסר פספורט" in (note.get("Note_Title", "") or "") or \
+                                   "חסר פספורט" in (note.get("Note_Content", "") or ""):
+                                    existing_note_id = note.get("id")
+                                    break
+                        if existing_note_id:
+                            # עדכן הערה קיימת
+                            requests.put(
+                                f"{domain}/crm/v2/Notes/{existing_note_id}",
+                                headers={**headers_z, "Content-Type": "application/json"},
+                                json={"data": [{"id": existing_note_id, "Note_Title": "חסר פספורט", "Note_Content": note_content}]},
+                                timeout=15)
+                        else:
+                            # צור הערה חדשה
+                            requests.post(
+                                f"{domain}/crm/v2/Notes",
+                                headers={**headers_z, "Content-Type": "application/json"},
+                                json={"data": [{
+                                    "Note_Title": "חסר פספורט",
+                                    "Note_Content": note_content,
+                                    "Parent_Id": {"id": acc_id},
+                                    "se_module": "Accounts"
+                                }]},
+                                timeout=15)
+                    except Exception as e_note:
+                        pass  # המשך גם אם הערה נכשלה
+                _send_reply(
+                    f"✅ *סריקת חסר פספורט הסתיימה*\n"
+                    f"📋 בעלי בתים עם לקוחות חסרי פספורט: {accounts_with_missing}\n"
+                    f"👤 סה\"כ לקוחות ללא פספורט: {total_missing}",
+                    from_number)
+            except Exception as e:
+                _send_reply(f"❌ שגיאה: {e}", from_number)
+        threading.Thread(target=_find_missing_passport, daemon=True).start()
+        return "⏳ מתחיל סריקה..."
 
     # === מיזוג לקוחות - חיפוש כפילוים לפי שם ויזה ===
     if msg_s == "מיזוג לקוחות":
