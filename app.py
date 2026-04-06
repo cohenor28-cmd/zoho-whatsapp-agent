@@ -1533,7 +1533,7 @@ def build_landlord_report(name_query: str, account=None) -> str:
         inv_unpaid = zoho_get("Invoices/search", {
             "criteria": f"(Account_Name:equals:{aid})and(Status:equals:לא שולם)",
             "fields": "Subject,Grand_Total,Status,Contact_Name,Created_Time",
-            "sort_by": "Contact_Name", "sort_order": "asc", "per_page": 100
+            "per_page": 100
         })
     except:
         inv_unpaid = []
@@ -1541,7 +1541,7 @@ def build_landlord_report(name_query: str, account=None) -> str:
         inv_partial = zoho_get("Invoices/search", {
             "criteria": f"(Account_Name:equals:{aid})and(Status:equals:שולם חלקית)",
             "fields": "Subject,Grand_Total,Status,Contact_Name,Created_Time",
-            "sort_by": "Contact_Name", "sort_order": "asc", "per_page": 100
+            "per_page": 100
         })
     except:
         inv_partial = []
