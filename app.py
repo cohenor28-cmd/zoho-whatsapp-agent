@@ -2327,6 +2327,19 @@ def handle_command(message, from_number):
         threading.Thread(target=_find_missing_passport, daemon=True).start()
         return "⏳ מתחיל סריקה..."
 
+    # === פונקציית עזר: בניית רשימת זוגות כפולים ===
+    def _build_merge_list(dups):
+        lines = [f"🔀 *{len(dups)} זוגות נותרים:*\n"]
+        for idx, (c1, c2, ratio) in enumerate(dups, 1):
+            v1 = (c1.get("Visa_Name1") or "").strip()
+            v2 = (c2.get("Visa_Name1") or "").strip()
+            a1 = c1.get("Account_Name", {}).get("name", "") if isinstance(c1.get("Account_Name"), dict) else str(c1.get("Account_Name", ""))
+            a2 = c2.get("Account_Name", {}).get("name", "") if isinstance(c2.get("Account_Name"), dict) else str(c2.get("Account_Name", ""))
+            pct = int(ratio * 100)
+            lines.append(f"{idx}. *{c1.get('Full_Name')}* ({a1}) ⇔️ *{c2.get('Full_Name')}* ({a2})\n   ויזה: {v1} / {v2} | דמיון: {pct}%")
+        lines.append("\nשלח מספר זוג למיזוג (לדוגמא: 1,3) או 0 לסיום")
+        return "\n".join(lines)
+
     # === מיזוג לקוחות - חיפוש כפילוים לפי שם ויזה ===
     if msg_s == "מיזוג לקוחות":
         sessions.pop(from_number, None)
@@ -2414,12 +2427,14 @@ def handle_command(message, from_number):
             lines.append(f"• *{c1.get('Full_Name')}* ({a1}) + *{c2.get('Full_Name')}* ({a2})")
             lines.append(f"  הישאר הלקוח עם חשבוניות אחרונות יותר, השני יסומן כלא פעיל")
         lines.append("\nכתוב *כן* לאישור או *לא* לביטול")
-        sessions[from_number] = {"pending": "confirm_merge", "pairs": chosen_pairs}
+        sessions[from_number] = {"pending": "confirm_merge", "pairs": chosen_pairs, "duplicates": duplicates, "chosen_indices": chosen_indices}
         return "\n".join(lines)
 
     # === מיזוג - אישור וביצוע ===
     if pending == "confirm_merge":
         pairs = sessions[from_number].get("pairs", [])
+        all_duplicates = sessions[from_number].get("duplicates", [])
+        chosen_indices_done = sessions[from_number].get("chosen_indices", [])
         if msg_s not in ["כן", "yes", "y"]:
             sessions.pop(from_number, None)
             return "✅ בוטל"
@@ -2529,11 +2544,17 @@ def handle_command(message, from_number):
                         f"   חשבוניות: {moved_inv} | תשלומים: {moved_payments} | קבצים: {moved_att} | הערות: {moved_notes}"
                     )
                 summary = "🔀 *סיכום מיזוג:*\n" + "\n".join(results)
+                # חשב את הזוגות הנותרים (בלי הזוגות שמוזגו)
+                remaining_duplicates = [d for i, d in enumerate(all_duplicates) if i not in chosen_indices_done]
                 # שאל אם למחוק את הלקוחות הישנים
                 if discarded_contacts:
                     names_list = "\n".join(f"  • {c['name']}" for c in discarded_contacts)
                     summary += f"\n\n🗑️ *הלקוחות הישנים סומנו כלא פעילים:*\n{names_list}\n\nהאם למחוק אותם לגמרי מ-Zoho?\nשלח *כן* למחיקה או כל דבר אחר לביטול"
-                    sessions[from_number] = {"pending": "confirm_delete_merged", "discarded_contacts": discarded_contacts}
+                    sessions[from_number] = {"pending": "confirm_delete_merged", "discarded_contacts": discarded_contacts, "remaining_duplicates": remaining_duplicates}
+                elif remaining_duplicates:
+                    # אין מחיקה - הצג מייד את הרשימה הנותרת
+                    summary += "\n\n" + _build_merge_list(remaining_duplicates)
+                    sessions[from_number] = {"pending": "pick_merge_pairs", "duplicates": remaining_duplicates}
                 _send_reply(summary, from_number)
             except Exception as e:
                 _send_reply(f"❌ שגיאה במיזוג: {e}", from_number)
@@ -2543,8 +2564,13 @@ def handle_command(message, from_number):
     # === אישור מחיקת לקוחות ישנים אחרי מיזוג ===
     if pending == "confirm_delete_merged":
         discarded_contacts = sessions[from_number].get("discarded_contacts", [])
+        remaining_duplicates = sessions[from_number].get("remaining_duplicates", [])
         sessions.pop(from_number, None)
         if msg_s not in ["כן", "yes", "y"]:
+            # ביטול מחיקה - הצג זוגות נותרים אם יש
+            if remaining_duplicates:
+                sessions[from_number] = {"pending": "pick_merge_pairs", "duplicates": remaining_duplicates}
+                return "✅ בוטל מחיקה - הלקוחות נשמרו כלא פעילים\n\n" + _build_merge_list(remaining_duplicates)
             return "✅ בוטל - הלקוחות הישנים נשמרו כלא פעילים"
         _send_reply("⏳ מוחק לקוחות ישנים...", from_number)
         def _do_delete_merged():
@@ -2558,13 +2584,17 @@ def handle_command(message, from_number):
                         deleted.append(c["name"])
                     else:
                         failed.append(c["name"])
-                lines = [f"🗑️ *סיכום מחיקה:*"]
+                lines = ["🗑️ *סיכום מחיקה:*"]
                 if deleted:
                     lines.append("✅ נמחקו:")
                     lines.extend(f"  • {n}" for n in deleted)
                 if failed:
                     lines.append("❌ נכשלו:")
                     lines.extend(f"  • {n}" for n in failed)
+                # הצג זוגות נותרים אם יש
+                if remaining_duplicates:
+                    lines.append("\n" + _build_merge_list(remaining_duplicates))
+                    sessions[from_number] = {"pending": "pick_merge_pairs", "duplicates": remaining_duplicates}
                 _send_reply("\n".join(lines), from_number)
             except Exception as e:
                 _send_reply(f"❌ שגיאה במחיקה: {e}", from_number)
