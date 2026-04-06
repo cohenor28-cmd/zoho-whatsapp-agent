@@ -809,7 +809,7 @@ def _process_payment_for_contact(contact, amount, method, from_number):
                        for i, inv in enumerate(open_invoices)])
     return (f"👤 *{contact['Full_Name']}* | 🏠 {acc_name_pay}\n"
             f"מצאתי {len(open_invoices)} חשבוניות פתוחות:\n{lines}\n\n"
-            f"איזו לסמן כשולם?\nשלח *ביטול* לביטול | *תפריט* לתפריט ראשי")
+            f"איזו לסמן כשולם?\n0 לביטול | 9 לתפריט ראשי")
 
 # ─── Main handler ──────────────────────────────────────────────────────────────
 def _looks_like_new_command(message):
@@ -1391,7 +1391,7 @@ def _format_contact_choice_menu(contacts, action_label: str) -> str:
         aname = account.get("name", "") if isinstance(account, dict) else str(account)
         lines.append(f"{i}. {cname} (🏠 {aname})")
     lines.append("─" * 28)
-    lines.append("שלח *ביטול* לביטול | *תפריט* לתפריט ראשי")
+    lines.append("0 לביטול | 9 לתפריט ראשי")
     return "\n".join(lines)
 
 def _format_account_choice_menu(accounts, action_label: str) -> str:
@@ -1402,7 +1402,7 @@ def _format_account_choice_menu(accounts, action_label: str) -> str:
         aname = a.get("Account_Name", "")
         lines.append(f"{i}. {aname}")
     lines.append("─" * 28)
-    lines.append("שלח *ביטול* לביטול | *תפריט* לתפריט ראשי")
+    lines.append("0 לביטול | 9 לתפריט ראשי")
     return "\n".join(lines)
 
 def build_open_debts_report() -> str:
@@ -1603,7 +1603,7 @@ def build_landlord_report(name_query: str, account=None) -> tuple:
         lines.append("")
     lines.append(SEP)
     lines.append("💡 שלח מספר לסטטוס מלא של אותו לקוח")
-    lines.append("שלח *ביטול* לביטול | *תפריט* לתפריט ראשי")
+    lines.append("0 לביטול | 9 לתפריט ראשי")
     return "\n".join(lines), ordered_contacts
 
 def update_passport_for_contact(contact: dict) -> str:
@@ -1695,6 +1695,18 @@ def handle_command(message, from_number):
     print(f"handle_command: '{message}' from {from_number}")
     session = sessions.get(from_number, {})
     pending = session.get("pending")
+    msg_nav = message.strip()
+
+    # === 0 = ביטול מכל מצב ===
+    if pending and msg_nav == "0":
+        sessions.pop(from_number, None)
+        cancel_flags[from_number] = True
+        return "✅ בוטל!"
+
+    # === 9 = חזרה לתפריט ראשי ===
+    if pending and msg_nav == "9":
+        sessions.pop(from_number, None)
+        return MAIN_MENU_TEXT.strip()
 
     # === בחירת לקוח לעדכון פספורט ===
     if pending == "choose_contact_passport":
