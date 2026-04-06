@@ -2261,7 +2261,6 @@ def handle_command(message, from_number):
                 _send_reply("\n".join(lines), from_number)
             except Exception as e:
                 _send_reply(f"❌ שגיאה בחיפוש כפילוים: {e}", from_number)
-        import threading
         threading.Thread(target=_find_duplicates, daemon=True).start()
         return "⏳ מחפש..."
 
@@ -2383,7 +2382,6 @@ def handle_command(message, from_number):
                 _send_reply("🔀 *סיכום מיזוג:*\n" + "\n".join(results), from_number)
             except Exception as e:
                 _send_reply(f"❌ שגיאה במיזוג: {e}", from_number)
-        import threading
         threading.Thread(target=_do_merge, daemon=True).start()
         return "⏳ מיזוג מתבצע..."
 
