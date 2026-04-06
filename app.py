@@ -409,8 +409,7 @@ def show_account_choice(accounts, search_name, from_number, original_action, ext
     }
     lines = [f"{i+1}. {a.get('Account_Name', '')}" for i, a in enumerate(options[:10])]
     extra = f"\n... ועוד {len(options) - 10}" if len(options) > 10 else ""
-    return f"🏠 מצאתי {len(options)} בעלי בתים עבור '{search_name}':\n" + "\n".join(lines) + extra + "\n\nכתוב מספר לבחירה:"
-
+    return f"🏠 מצאתי {len(options)} בעלי ביתים עבור '{search_name}':\n" + "\n".join(lines) + extra + "\n\nכתוב מספר לבחירה:\n0 לביטול | 9 לתפריט ראשי"
 def find_product(product_name):
     """שיפור: חיפוש מוצר מהקאש בזיכרון במקום API call כל פעם"""
     if not product_name:
@@ -779,7 +778,7 @@ def handle_payment(contact_name, account_name, amount, method, from_number):
             "context": {"amount": amount, "method": method}
         }
         names = "\n".join([f"{i+1}. {c['Full_Name']}" for i, c in enumerate(contacts)])
-        return f"מצאתי כמה לקוחות:\n{names}\n\nכתוב חלק מהשם או מספר לבחירה:"
+        return f"מצאתי כמה לקוחות:\n{names}\n\nכתוב חלק מהשם או מספר לבחירה:\n0 לביטול | 9 לתפריט ראשי"
     return _process_payment_for_contact(contacts[0], amount, method, from_number)
 
 def _process_payment_for_contact(contact, amount, method, from_number):
@@ -1148,25 +1147,45 @@ def build_deposits_report_with_cache(records: list) -> str:
     return "\n".join(lines)
 
 def build_deposits_by_contact(records: list) -> str:
-    """פירוט הפקדות לפי לקוח"""
+    """פירוט הפקדות לפי לקוח - ממוין לפי סהכ בעל בית ואחרכך לפי סהכ לקוח"""
     SEP = "──────────────"
     today_str = datetime.now().strftime("%d/%m/%Y")
     by_contact = {}
     for rec in records:
         c = rec["contact"] or "לא ידוע"
-        by_contact.setdefault(c, {"total": 0, "kinds": {}})
+        landlord = rec.get("landlord") or "לא ידוע"
+        by_contact.setdefault(c, {"total": 0, "kinds": {}, "landlord": landlord})
         by_contact[c]["total"] += rec["amount"]
         k = rec["kind"]
         by_contact[c]["kinds"].setdefault(k, 0)
         by_contact[c]["kinds"][k] += rec["amount"]
+    # חשב סהכ לפי בעל בית
+    landlord_totals = {}
+    for cname, data in by_contact.items():
+        a = data["landlord"]
+        landlord_totals[a] = landlord_totals.get(a, 0) + data["total"]
+    # מיין: קודם לפי סהכ בעל בית (גדול לקטן), אחרכך לפי סהכ לקוח (גדול לקטן)
+    sorted_contacts = sorted(
+        by_contact.items(),
+        key=lambda x: (-landlord_totals.get(x[1]["landlord"], 0), -x[1]["total"])
+    )
     lines = [f"💳 *הפקדות לפי לקוח - {today_str}*", SEP]
     grand = 0
-    for cname, data in sorted(by_contact.items()):
+    prev_landlord = None
+    for cname, data in sorted_contacts:
         grand += data["total"]
-        lines.append(f"👤 *{cname}* - ₪{data['total']}")
+        landlord = data["landlord"]
+        # הדפס כותרת בעל בית כשמשתנה
+        if landlord != prev_landlord:
+            if prev_landlord is not None:
+                lines.append("")
+            lines.append(f"🏠 *{landlord}* - סהכ ₪{landlord_totals.get(landlord, 0)}")
+            lines.append("─" * 14)
+            prev_landlord = landlord
+        lines.append(f"  👤 *{cname}* - ₪{data['total']}")
         for kind, amt in sorted(data["kinds"].items()):
-            lines.append(f"   • {kind}: ₪{amt}")
-        lines.append("")
+            lines.append(f"     • {kind}: ₪{amt}")
+    lines.append("")
     lines.append(SEP)
     lines.append(f"📊 סהכ: *₪{grand}*")
     lines.append("")
@@ -1533,7 +1552,11 @@ def build_customer_status(name_query: str, contact=None) -> str:
         lines.append("📦 *מוצרים שנקנו:*")
         for pname, qty in sorted(product_counts.items(), key=lambda x: -x[1]):
             lines.append(f"   • {pname} x{qty}")
-    return "\n".join(lines)
+    if aname:
+        lines.append(SEP)
+        lines.append(f"🏠 לסטטוס בית *{aname}* - כתוב *8*")
+    lines.append("0 לביטול | 9 לתפריט ראשי")
+    return "\n".join(lines), aname, cid
 
 def build_landlord_report(name_query: str, account=None) -> tuple:
     """דוח בעל בית - רק חשבונות פתוחות לפי לקוח + קווים פעילים.
@@ -1605,8 +1628,15 @@ def build_landlord_report(name_query: str, account=None) -> tuple:
     if not by_contact:
         lines.append("✅ אין חובות פתוחים")
         return "\n".join(lines), []
-    # מיין לפי שם לקוח (אלפבית)
-    for idx, cname in enumerate(sorted(by_contact.keys()), 1):
+    # מיין לפי קווים פעילים (גדול לקטן) ואחרכך שם
+    sorted_contacts = sorted(
+        by_contact.keys(),
+        key=lambda c: (-active_lines_map.get(c, 0), c)
+    )
+    TOP_N = 8
+    top_contacts = sorted_contacts[:TOP_N]
+    rest_contacts = sorted_contacts[TOP_N:]
+    for idx, cname in enumerate(top_contacts, 1):
         data = by_contact[cname]
         active = active_lines_map.get(cname, 0)
         cid = contact_ids.get(cname, "")
@@ -1615,10 +1645,13 @@ def build_landlord_report(name_query: str, account=None) -> tuple:
         for i in data["invs"]:
             lines.append(f"   {i['em']} ₪{i['total']} | {i['date']}")
         lines.append("")
+    if rest_contacts:
+        lines.append(f"10. 📝 עוד {len(rest_contacts)} לקוחות (כל הרשימה)")
+        lines.append("")
     lines.append(SEP)
     lines.append("💡 שלח מספר לסטטוס מלא של אותו לקוח")
     lines.append("0 לביטול | 9 לתפריט ראשי")
-    return "\n".join(lines), ordered_contacts
+    return "\n".join(lines), ordered_contacts, rest_contacts, contact_ids, by_contact, active_lines_map
 
 def update_passport_for_contact(contact: dict) -> str:
     """
@@ -2008,7 +2041,10 @@ def handle_command(message, from_number):
             idx = int(choice) - 1
             if 0 <= idx < len(contacts):
                 sessions.pop(from_number, None)
-                return build_customer_status(name_q, contact=contacts[idx])
+                status_text, aname, cid = build_customer_status(name_q, contact=contacts[idx])
+                if aname:
+                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname}
+                return status_text
         return f"❓ כתוב מספר בין 1 ל-{len(contacts)}"
 
     # === בחירת בעל בית מתוצאות חיפוש ===
@@ -2020,16 +2056,44 @@ def handle_command(message, from_number):
             idx = int(choice) - 1
             if 0 <= idx < len(accounts):
                 sessions.pop(from_number, None)
-                report, ordered_contacts = build_landlord_report(name_q, account=accounts[idx])
+                result = build_landlord_report(name_q, account=accounts[idx])
+                report, ordered_contacts = result[0], result[1]
+                rest_contacts = result[2] if len(result) > 2 else []
+                contact_ids_map = result[3] if len(result) > 3 else {}
+                by_contact_map = result[4] if len(result) > 4 else {}
+                active_lines_map = result[5] if len(result) > 5 else {}
                 if ordered_contacts:
-                    sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts}
+                    sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts,
+                        "rest": rest_contacts, "contact_ids": contact_ids_map,
+                        "by_contact": by_contact_map, "active_lines": active_lines_map, "aname": name_q}
                 return report
         return f"❓ כתוב מספר בין 1 ל-{len(accounts)}"
 
     # === בחירת לקוח מסטטוס בית (לחיצה על ספרה) ===
     if pending == "choose_landlord_contact":
-        contacts = session.get("contacts", [])  # list of (cname, cid)
+        contacts = session.get("contacts", [])  # list of (cname, cid) - top 8
+        rest_contacts = session.get("rest", [])  # remaining contacts
+        contact_ids_map = session.get("contact_ids", {})
+        by_contact_map = session.get("by_contact", {})
+        active_lines_map = session.get("active_lines", {})
+        aname_session = session.get("aname", "")
         choice = message.strip()
+        # ספרה 10 = הצג את כל הרשימה
+        if choice == "10" and rest_contacts:
+            all_contacts = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
+            SEP = "──────────────"
+            lines = [f"🏠 *{aname_session}* - כל הלקוחות", SEP]
+            for idx2, (cn, _) in enumerate(all_contacts, 1):
+                data = by_contact_map.get(cn, {"debt": 0})
+                active = active_lines_map.get(cn, 0)
+                lines.append(f"{idx2}. 👤 *{cn}* | 📞 {active} קווים | 🚨 ₪{data.get('debt',0)}")
+            lines.append("")
+            lines.append("💡 שלח מספר לסטטוס מלא")
+            lines.append("0 לביטול | 9 לתפריט ראשי")
+            sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": all_contacts,
+                "rest": [], "contact_ids": contact_ids_map, "by_contact": by_contact_map,
+                "active_lines": active_lines_map, "aname": aname_session}
+            return "\n".join(lines)
         if choice.isdigit():
             idx = int(choice) - 1
             if 0 <= idx < len(contacts):
@@ -2037,8 +2101,30 @@ def handle_command(message, from_number):
                 sessions.pop(from_number, None)
                 # בנה contact dict מינימלי ל-build_customer_status
                 contact_obj = {"id": cid, "Full_Name": cname}
-                return build_customer_status(cname, contact=contact_obj)
-        return f"❓ כתוב מספר בין 1 ל-{len(contacts)}"
+                status_text, aname, _ = build_customer_status(cname, contact=contact_obj)
+                if aname:
+                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname}
+                return status_text
+        return f"❓ כתוב מספר בין 1 ל-{len(contacts)} או 10 לכל הרשימה"
+
+    # === ניווט אחרי סטטוס לקוח: 8 לסטטוס בית ===
+    if pending == "customer_status_nav":
+        aname = session.get("aname", "")
+        if message.strip() == "8" and aname:
+            sessions.pop(from_number, None)
+            result = build_landlord_report(aname)
+            report, ordered_contacts = result[0], result[1]
+            rest_contacts = result[2] if len(result) > 2 else []
+            contact_ids_map = result[3] if len(result) > 3 else {}
+            by_contact_map = result[4] if len(result) > 4 else {}
+            active_lines_map = result[5] if len(result) > 5 else {}
+            if ordered_contacts:
+                sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts,
+                    "rest": rest_contacts, "contact_ids": contact_ids_map,
+                    "by_contact": by_contact_map, "active_lines": active_lines_map, "aname": aname}
+            return report
+        sessions.pop(from_number, None)
+        return None  # ימשיך לטיפול רגיל
 
     # === בחירת בעל בית לעדכון פספורטות במאסס ===
     if pending == "choose_account_bulk_passport":
@@ -3485,7 +3571,10 @@ def handle_command(message, from_number):
                 return f"❓ לא מצאתי לקוח בשם *{name_q}*"
             if len(contacts) == 1:
                 sessions.pop(from_number, None)
-                return build_customer_status(name_q, contact=contacts[0])
+                status_text, aname, cid = build_customer_status(name_q, contact=contacts[0])
+                if aname:
+                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname}
+                return status_text
             sessions[from_number] = {"pending": "choose_contact_status", "contacts": contacts, "name_q": name_q}
             return _format_contact_choice_menu(contacts, "סטטוס")
 
@@ -3498,9 +3587,16 @@ def handle_command(message, from_number):
                 return f"❓ לא מצאתי בעל בית בשם *{name_q}*"
             if len(accounts) == 1:
                 sessions.pop(from_number, None)
-                report, ordered_contacts = build_landlord_report(name_q, account=accounts[0])
+                result = build_landlord_report(name_q, account=accounts[0])
+                report, ordered_contacts = result[0], result[1]
+                rest_contacts = result[2] if len(result) > 2 else []
+                contact_ids_map = result[3] if len(result) > 3 else {}
+                by_contact_map = result[4] if len(result) > 4 else {}
+                active_lines_map = result[5] if len(result) > 5 else {}
                 if ordered_contacts:
-                    sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts}
+                    sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts,
+                        "rest": rest_contacts, "contact_ids": contact_ids_map,
+                        "by_contact": by_contact_map, "active_lines": active_lines_map, "aname": name_q}
                 parts = split_message(report)
                 if len(parts) == 1: return parts[0]
                 def _send_lr_rest():
