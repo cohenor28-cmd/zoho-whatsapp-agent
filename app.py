@@ -1245,6 +1245,8 @@ MAIN_MENU_TEXT = ("""
 15. דוח יומי
 16. כל הדוחות
 17. חובות פתוחים
+🔀 *כלים*
+18. מיזוג לקוחות
 ────────────────────────────
 💡 לפרטים נוספים כתוב *עזרה*
 """)
@@ -2198,6 +2200,192 @@ def handle_command(message, from_number):
             # כמה לקוחות - הצג תפריט בחירה
             sessions[from_number] = {"pending": "choose_contact_passport", "contacts": contacts, "name_q": name_q}
             return _format_contact_choice_menu(contacts, "עדכון פספורט")
+
+    # === מיזוג לקוחות - חיפוש כפילוים לפי שם ויזה ===
+    if msg_s == "מיזוג לקוחות":
+        sessions.pop(from_number, None)
+        _send_reply("⏳ מחפש לקוחות כפולים לפי שם ויזה...", from_number)
+        def _find_duplicates():
+            try:
+                import difflib
+                # שלוף כל הלקוחות עם שם ויזה
+                all_contacts = []
+                page = 1
+                while True:
+                    batch, info = zoho_get_full("Contacts/search", {
+                        "criteria": "(Visa_Name1:is_not_empty:true)",
+                        "fields": "Full_Name,Visa_Name1,Account_Name,id,Created_Time",
+                        "per_page": 200,
+                        "page": page
+                    })
+                    if not batch:
+                        break
+                    all_contacts.extend(batch)
+                    if not info.get("more_records", False):
+                        break
+                    page += 1
+                if not all_contacts:
+                    _send_reply("❌ לא נמצאו לקוחות עם שם ויזה", from_number)
+                    return
+                # מצא כפילוים - שם ויזה זהה או דומה (>85%)
+                duplicates = []  # [(contact1, contact2, similarity)]
+                checked = set()
+                for i, c1 in enumerate(all_contacts):
+                    v1 = (c1.get("Visa_Name1") or "").strip().upper()
+                    if not v1 or c1["id"] in checked:
+                        continue
+                    for c2 in all_contacts[i+1:]:
+                        if c2["id"] in checked:
+                            continue
+                        v2 = (c2.get("Visa_Name1") or "").strip().upper()
+                        if not v2:
+                            continue
+                        # חשב דמיון
+                        ratio = difflib.SequenceMatcher(None, v1, v2).ratio()
+                        if ratio >= 0.85:
+                            duplicates.append((c1, c2, ratio))
+                if not duplicates:
+                    _send_reply("✅ לא נמצאו לקוחות כפולים!", from_number)
+                    return
+                # הצג את הכפילוים
+                lines = [f"🔀 *נמצאו {len(duplicates)} זוגות כפולים:*\n"]
+                for idx, (c1, c2, ratio) in enumerate(duplicates, 1):
+                    v1 = (c1.get("Visa_Name1") or "").strip()
+                    v2 = (c2.get("Visa_Name1") or "").strip()
+                    a1 = c1.get("Account_Name", {}).get("name", "") if isinstance(c1.get("Account_Name"), dict) else str(c1.get("Account_Name", ""))
+                    a2 = c2.get("Account_Name", {}).get("name", "") if isinstance(c2.get("Account_Name"), dict) else str(c2.get("Account_Name", ""))
+                    pct = int(ratio * 100)
+                    lines.append(f"{idx}. *{c1.get('Full_Name')}* ({a1}) ↔️ *{c2.get('Full_Name')}* ({a2})\n   ויזה: {v1} / {v2} | דמיון: {pct}%")
+                lines.append("\nשלח מספר זוג למיזוג (לדוגמא: 1,3) או 0 לביטול")
+                sessions[from_number] = {"pending": "pick_merge_pairs", "duplicates": duplicates}
+                _send_reply("\n".join(lines), from_number)
+            except Exception as e:
+                _send_reply(f"❌ שגיאה בחיפוש כפילוים: {e}", from_number)
+        import threading
+        threading.Thread(target=_find_duplicates, daemon=True).start()
+        return "⏳ מחפש..."
+
+    # === מיזוג - בחירת זוגות למיזוג ===
+    if pending == "pick_merge_pairs":
+        duplicates = sessions[from_number].get("duplicates", [])
+        if msg_s in ["0", "ביטול"]:
+            sessions.pop(from_number, None)
+            return "✅ בוטל"
+        # פרס מספרים
+        try:
+            chosen_indices = [int(x.strip()) - 1 for x in msg_s.split(",") if x.strip().isdigit()]
+        except:
+            return "❓ שלח מספרים מופרדים בפסיקות (לדוגמא: 1,3) או 0 לביטול"
+        invalid = [i+1 for i in chosen_indices if i < 0 or i >= len(duplicates)]
+        if invalid:
+            return f"❓ מספרים לא חוקיים: {invalid}. שלח מספרים בין 1 ל-{len(duplicates)}"
+        chosen_pairs = [duplicates[i] for i in chosen_indices]
+        # הצג אישור לכל זוג
+        lines = ["🔄 *אישור מיזוג:*\n"]
+        for c1, c2, ratio in chosen_pairs:
+            a1 = c1.get("Account_Name", {}).get("name", "") if isinstance(c1.get("Account_Name"), dict) else str(c1.get("Account_Name", ""))
+            a2 = c2.get("Account_Name", {}).get("name", "") if isinstance(c2.get("Account_Name"), dict) else str(c2.get("Account_Name", ""))
+            lines.append(f"• *{c1.get('Full_Name')}* ({a1}) + *{c2.get('Full_Name')}* ({a2})")
+            lines.append(f"  הישאר הלקוח עם חשבוניות אחרונות יותר, השני יסומן כלא פעיל")
+        lines.append("\nכתוב *כן* לאישור או *לא* לביטול")
+        sessions[from_number] = {"pending": "confirm_merge", "pairs": chosen_pairs}
+        return "\n".join(lines)
+
+    # === מיזוג - אישור וביצוע ===
+    if pending == "confirm_merge":
+        pairs = sessions[from_number].get("pairs", [])
+        if msg_s not in ["כן", "yes", "y"]:
+            sessions.pop(from_number, None)
+            return "✅ בוטל"
+        sessions.pop(from_number, None)
+        _send_reply("⏳ מתחיל מיזוג...", from_number)
+        def _do_merge():
+            try:
+                token, domain = get_access_token()
+                headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+                results = []
+                for c1, c2, ratio in pairs:
+                    # קבע מי ישאר (חשבוניות אחרונות יותר) ומי יסומן
+                    inv1 = zoho_get("Invoices/search", {"criteria": f"(Contact_Name:equals:{c1['id']})", "fields": "id,Created_Time", "per_page": 200})
+                    inv2 = zoho_get("Invoices/search", {"criteria": f"(Contact_Name:equals:{c2['id']})", "fields": "id,Created_Time", "per_page": 200})
+                    def _latest_invoice_date(invs):
+                        dates = []
+                        for inv in invs:
+                            ct = inv.get("Created_Time") or ""
+                        if ct:
+                            dates.append(ct)
+                        return max(dates) if dates else ""
+                    d1 = _latest_invoice_date(inv1)
+                    d2 = _latest_invoice_date(inv2)
+                    # הלקוח עם חשבוניות אחרונות יותר = ישאר
+                    if d1 >= d2:
+                        keep, discard = c1, c2
+                        keep_invs, discard_invs = inv1, inv2
+                    else:
+                        keep, discard = c2, c1
+                        keep_invs, discard_invs = inv2, inv1
+                    keep_id = keep["id"]
+                    discard_id = discard["id"]
+                    moved_inv = 0
+                    moved_att = 0
+                    moved_notes = 0
+                    # 1. העבר חשבוניות מהישן לחדש
+                    for inv in discard_invs:
+                        res = zoho_put(f"Invoices/{inv['id']}", {"data": [{"id": inv["id"], "Contact_Name": {"id": keep_id}}]})
+                        if res.get("data", [{}])[0].get("code") == "SUCCESS":
+                            moved_inv += 1
+                    # 2. העבר קבצים מצורפים (Attachments) - הורד והעלה מחדש
+                    r_att = requests.get(f"{domain}/crm/v2/Contacts/{discard_id}/Attachments", headers=headers_z, timeout=15)
+                    if r_att.status_code == 200 and r_att.json().get("data"):
+                        for att in r_att.json()["data"]:
+                            att_id = att["id"]
+                            # הורד את הקובץ
+                            r_dl = requests.get(f"{domain}/crm/v2/Contacts/{discard_id}/Attachments/{att_id}", headers=headers_z, timeout=30)
+                            if r_dl.status_code != 200:
+                                continue
+                            file_bytes = r_dl.content
+                            fname = att.get("File_Name", "file.jpg")
+                            content_type = r_dl.headers.get("content-type", "application/octet-stream")
+                            # העלה ללקוח החדש
+                            import io
+                            upload_r = requests.post(
+                                f"{domain}/crm/v2/Contacts/{keep_id}/Attachments",
+                                headers={"Authorization": f"Zoho-oauthtoken {token}"},
+                                files={"file": (fname, io.BytesIO(file_bytes), content_type)},
+                                timeout=30
+                            )
+                            if upload_r.status_code in [200, 201]:
+                                moved_att += 1
+                    # 3. העבר הערות (Notes)
+                    r_notes = requests.get(f"{domain}/crm/v2/Contacts/{discard_id}/Notes", headers=headers_z, timeout=15)
+                    if r_notes.status_code == 200 and r_notes.json().get("data"):
+                        for note in r_notes.json()["data"]:
+                            note_body = note.get("Note_Content", "")
+                            note_title = note.get("Note_Title", "")
+                            # צור הערה חדשה בלקוח החדש
+                            new_note = {
+                                "data": [{
+                                    "Note_Title": note_title or f"מיזוג מ-{discard.get('Full_Name', '')}",
+                                    "Note_Content": note_body,
+                                    "Parent_Id": {"id": keep_id},
+                                    "se_module": "Contacts"
+                                }]
+                            }
+                            r_new_note = requests.post(f"{domain}/crm/v2/Notes", headers={**headers_z, "Content-Type": "application/json"}, json=new_note, timeout=15)
+                            if r_new_note.status_code in [200, 201]:
+                                moved_notes += 1
+                    # 4. סמן את הלקוח הישן כלא פעיל
+                    zoho_put(f"Contacts/{discard_id}", {"data": [{"id": discard_id, "Contact_Status": "לא פעיל"}]})
+                    results.append(
+                        f"✅ מוזג: *{keep.get('Full_Name')}* ← *{discard.get('Full_Name')}*\n"
+                        f"   חשבוניות: {moved_inv} | קבצים: {moved_att} | הערות: {moved_notes}"
+                    )
+                _send_reply("🔀 *סיכום מיזוג:*\n" + "\n".join(results), from_number)
+            except Exception as e:
+                _send_reply(f"❌ שגיאה במיזוג: {e}", from_number)
+        import threading
+        threading.Thread(target=_do_merge, daemon=True).start()
+        return "⏳ מיזוג מתבצע..."
 
     # === תיקון פרופיל (ללא שם) - בחירת בעל בית מהפעילים ===
     if msg_s == "תיקון פרופיל":
