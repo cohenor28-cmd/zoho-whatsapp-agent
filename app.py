@@ -799,6 +799,7 @@ def _process_payment_for_contact(contact, amount, method, from_number):
                     f"💰 ₪{pay_amount} | {pay_method}\n"
                     f"📄 {inv.get('Subject', '')}")
         return "❌ שגיאה בעדכון התשלום"
+    acc_name_pay = contact.get("Account_Name", {}).get("name", "") if isinstance(contact.get("Account_Name"), dict) else str(contact.get("Account_Name", ""))
     sessions[from_number] = {
         "pending": "payment_invoice_choice",
         "options": open_invoices,
@@ -806,7 +807,9 @@ def _process_payment_for_contact(contact, amount, method, from_number):
     }
     lines = "\n".join([f"{i+1}. {inv.get('Subject','')} - ₪{inv.get('Grand_Total',0)}"
                        for i, inv in enumerate(open_invoices)])
-    return f"מצאתי {len(open_invoices)} חשבוניות פתוחות:\n{lines}\n\nאיזו לסמן כשולם?"
+    return (f"👤 *{contact['Full_Name']}* | 🏠 {acc_name_pay}\n"
+            f"מצאתי {len(open_invoices)} חשבוניות פתוחות:\n{lines}\n\n"
+            f"איזו לסמן כשולם?\nשלח *ביטול* לביטול | *תפריט* לתפריט ראשי")
 
 # ─── Main handler ──────────────────────────────────────────────────────────────
 def _looks_like_new_command(message):
@@ -1387,6 +1390,8 @@ def _format_contact_choice_menu(contacts, action_label: str) -> str:
         account = c.get("Account_Name", {})
         aname = account.get("name", "") if isinstance(account, dict) else str(account)
         lines.append(f"{i}. {cname} (🏠 {aname})")
+    lines.append("─" * 28)
+    lines.append("שלח *ביטול* לביטול | *תפריט* לתפריט ראשי")
     return "\n".join(lines)
 
 def _format_account_choice_menu(accounts, action_label: str) -> str:
@@ -1396,6 +1401,8 @@ def _format_account_choice_menu(accounts, action_label: str) -> str:
     for i, a in enumerate(accounts, 1):
         aname = a.get("Account_Name", "")
         lines.append(f"{i}. {aname}")
+    lines.append("─" * 28)
+    lines.append("שלח *ביטול* לביטול | *תפריט* לתפריט ראשי")
     return "\n".join(lines)
 
 def build_open_debts_report() -> str:
@@ -1514,13 +1521,14 @@ def build_customer_status(name_query: str, contact=None) -> str:
             lines.append(f"   • {pname} x{qty}")
     return "\n".join(lines)
 
-def build_landlord_report(name_query: str, account=None) -> str:
-    """דוח בעל בית - רק חשבונות פתוחות לפי לקוח + קווים פעילים"""
+def build_landlord_report(name_query: str, account=None) -> tuple:
+    """דוח בעל בית - רק חשבונות פתוחות לפי לקוח + קווים פעילים.
+    Returns (report_text, ordered_contact_ids) for interactive selection."""
     SEP = "──────────────"
     if account is None:
         accounts = _word_search_accounts(name_query)
         if not accounts:
-            return f"❓ לא מצאתי בעל בית בשם *{name_query}*"
+            return f"❓ לא מצאתי בעל בית בשם *{name_query}*", []
         account = accounts[0]
     aname = account.get("Account_Name", name_query)
     aid = account["id"]
@@ -1579,18 +1587,24 @@ def build_landlord_report(name_query: str, account=None) -> str:
         f"🚨 חובות פתוחים: *₪{grand_debt}* | {len(invoices)} חשבונות | {len(by_contact)} לקוחות",
         SEP,
     ]
+    ordered_contacts = []  # list of (cname, cid) in display order
     if not by_contact:
         lines.append("✅ אין חובות פתוחים")
-        return "\n".join(lines)
+        return "\n".join(lines), []
     # מיין לפי שם לקוח (אלפבית)
-    for cname in sorted(by_contact.keys()):
+    for idx, cname in enumerate(sorted(by_contact.keys()), 1):
         data = by_contact[cname]
         active = active_lines_map.get(cname, 0)
-        lines.append(f"👤 *{cname}* | 📞 {active} קווים | 🚨 ₪{data['debt']}")
+        cid = contact_ids.get(cname, "")
+        ordered_contacts.append((cname, cid))
+        lines.append(f"{idx}. 👤 *{cname}* | 📞 {active} קווים | 🚨 ₪{data['debt']}")
         for i in data["invs"]:
             lines.append(f"   {i['em']} ₪{i['total']} | {i['date']}")
         lines.append("")
-    return "\n".join(lines)
+    lines.append(SEP)
+    lines.append("💡 שלח מספר לסטטוס מלא של אותו לקוח")
+    lines.append("שלח *ביטול* לביטול | *תפריט* לתפריט ראשי")
+    return "\n".join(lines), ordered_contacts
 
 def update_passport_for_contact(contact: dict) -> str:
     """
@@ -1980,8 +1994,25 @@ def handle_command(message, from_number):
             idx = int(choice) - 1
             if 0 <= idx < len(accounts):
                 sessions.pop(from_number, None)
-                return build_landlord_report(name_q, account=accounts[idx])
+                report, ordered_contacts = build_landlord_report(name_q, account=accounts[idx])
+                if ordered_contacts:
+                    sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts}
+                return report
         return f"❓ כתוב מספר בין 1 ל-{len(accounts)}"
+
+    # === בחירת לקוח מסטטוס בית (לחיצה על ספרה) ===
+    if pending == "choose_landlord_contact":
+        contacts = session.get("contacts", [])  # list of (cname, cid)
+        choice = message.strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(contacts):
+                cname, cid = contacts[idx]
+                sessions.pop(from_number, None)
+                # בנה contact dict מינימלי ל-build_customer_status
+                contact_obj = {"id": cid, "Full_Name": cname}
+                return build_customer_status(cname, contact=contact_obj)
+        return f"❓ כתוב מספר בין 1 ל-{len(contacts)}"
 
     # === בחירת בעל בית לעדכון פספורטות במאסס ===
     if pending == "choose_account_bulk_passport":
@@ -3441,7 +3472,9 @@ def handle_command(message, from_number):
                 return f"❓ לא מצאתי בעל בית בשם *{name_q}*"
             if len(accounts) == 1:
                 sessions.pop(from_number, None)
-                report = build_landlord_report(name_q, account=accounts[0])
+                report, ordered_contacts = build_landlord_report(name_q, account=accounts[0])
+                if ordered_contacts:
+                    sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts}
                 parts = split_message(report)
                 if len(parts) == 1: return parts[0]
                 def _send_lr_rest():
