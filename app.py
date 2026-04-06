@@ -1546,6 +1546,16 @@ def build_customer_status(name_query: str, contact=None) -> str:
         for inv in unpaid:
             created = inv.get("Created_Time", "")[:10]
             lines.append(f"   • ₪{inv.get('Grand_Total',0)} | {created}")
+            # הצג מוצרים של החשבונית
+            items = inv.get("Invoiced_Items") or []
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        prod = item.get("product") or item.get("Product_Name") or {}
+                        pname = prod.get("name", "") if isinstance(prod, dict) else str(prod)
+                        if pname:
+                            qty = item.get("quantity", 1) or 1
+                            lines.append(f"     └ {pname}" + (f" x{int(qty)}" if qty and int(qty) > 1 else ""))
     else:
         lines.append("✅ אין חובות פתוחים")
     if product_counts:
@@ -1613,16 +1623,20 @@ def build_landlord_report(name_query: str, account=None) -> tuple:
             if cid:
                 r = _req.get(f"{domain}/crm/v5/Contacts/{cid}",
                              headers={"Authorization": f"Zoho-oauthtoken {token}"},
-                             params={"fields": "field11"})
+                             params={"fields": "field11,field12"})
                 if r.status_code == 200:
-                    active_lines_map[cname] = r.json()["data"][0].get("field11", 0) or 0
+                    d = r.json()["data"][0]
+                    active_lines_map[cname] = d.get("field11", 0) or 0
+                    line_numbers_map[cname] = d.get("field12", "") or ""
     except:
         pass
     grand_debt = sum(v["debt"] for v in by_contact.values())
+    total_active_lines = sum(active_lines_map.values())
     lines = [
         f"🏠 *{aname}*",
         SEP,
         f"🚨 חובות פתוחים: *₪{grand_debt}* | {len(invoices)} חשבונות | {len(by_contact)} לקוחות",
+        f"📞 קווים פעילים: *{total_active_lines}*",
         SEP,
     ]
     ordered_contacts = []  # list of (cname, cid) in display order
@@ -1637,22 +1651,61 @@ def build_landlord_report(name_query: str, account=None) -> tuple:
     TOP_N = 8
     top_contacts = sorted_contacts[:TOP_N]
     rest_contacts = sorted_contacts[TOP_N:]
+    # שלוף מוצרים לחשבוניות הפתוחות
+    inv_items_map = {}  # invoice_id -> list of product strings
+    try:
+        token2, domain2 = get_access_token()
+        import requests as _req2
+        for inv in invoices:
+            inv_id = inv.get("id", "")
+            if inv_id:
+                r_inv = _req2.get(f"{domain2}/crm/v5/Invoices/{inv_id}",
+                                  headers={"Authorization": f"Zoho-oauthtoken {token2}"},
+                                  params={"fields": "Invoiced_Items"})
+                if r_inv.status_code == 200:
+                    items = r_inv.json()["data"][0].get("Invoiced_Items") or []
+                    prods = []
+                    for item in items:
+                        if isinstance(item, dict):
+                            prod = item.get("product") or item.get("Product_Name") or {}
+                            pname = prod.get("name", "") if isinstance(prod, dict) else str(prod)
+                            qty = item.get("quantity", 1) or 1
+                            if pname:
+                                prods.append(pname + (f" x{int(qty)}" if qty and int(qty) > 1 else ""))
+                    inv_items_map[inv_id] = prods
+    except:
+        pass
+    # צירוף מוצרים ל-invs
+    for inv in invoices:
+        inv_id = inv.get("id", "")
+        contact_obj = inv.get("Contact_Name", {})
+        cname_inv = contact_obj.get("name", "") if isinstance(contact_obj, dict) else str(contact_obj)
+        if cname_inv in by_contact:
+            for inv_entry in by_contact[cname_inv]["invs"]:
+                if not inv_entry.get("products") and inv_entry.get("date") == inv.get("Created_Time", "")[:10]:
+                    inv_entry["products"] = inv_items_map.get(inv_id, [])
+                    break
     for idx, cname in enumerate(top_contacts, 1):
         data = by_contact[cname]
         active = active_lines_map.get(cname, 0)
+        line_nums = line_numbers_map.get(cname, "")
         cid = contact_ids.get(cname, "")
         ordered_contacts.append((cname, cid))
         lines.append(f"{idx}. 👤 *{cname}* | 📞 {active} קווים | 🚨 ₪{data['debt']}")
+        if line_nums:
+            lines.append(f"   🔢 {line_nums}")
         for i in data["invs"]:
             lines.append(f"   {i['em']} ₪{i['total']} | {i['date']}")
+            for p in i.get("products", []):
+                lines.append(f"     └ {p}")
         lines.append("")
     if rest_contacts:
         lines.append(f"10. 📝 עוד {len(rest_contacts)} לקוחות (כל הרשימה)")
         lines.append("")
     lines.append(SEP)
-    lines.append("💡 שלח מספר לסטטוס מלא של אותו לקוח")
+    lines.append("💡 שלח מספר לסטטוס מלא של אותו לקוח | 8 לתשלום ללקוח")
     lines.append("0 לביטול | 9 לתפריט ראשי")
-    return "\n".join(lines), ordered_contacts, rest_contacts, contact_ids, by_contact, active_lines_map
+    return "\n".join(lines), ordered_contacts, rest_contacts, contact_ids, by_contact, active_lines_map, line_numbers_map
 
 def update_passport_for_contact(contact: dict) -> str:
     """
@@ -2095,6 +2148,19 @@ def handle_command(message, from_number):
                 "rest": [], "contact_ids": contact_ids_map, "by_contact": by_contact_map,
                 "active_lines": active_lines_map, "aname": aname_session}
             return "\n".join(lines)
+        # 8 = תשלום ללקוח מהרשימה
+        if choice == "8":
+            all_c = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
+            SEP = "──────────────"
+            lines_pay = [f"🏠 *{aname_session}* - בחר לקוח לתשלום:", SEP]
+            for idx2, (cn, _) in enumerate(all_c, 1):
+                data = by_contact_map.get(cn, {"debt": 0})
+                lines_pay.append(f"{idx2}. 👤 *{cn}* | 🚨 ₪{data.get('debt',0)}")
+            lines_pay.append("")
+            lines_pay.append("0 לביטול | 9 לתפריט ראשי")
+            sessions[from_number] = {"pending": "landlord_payment_contact_choice",
+                "contacts": all_c, "aname": aname_session}
+            return "\n".join(lines_pay)
         if choice.isdigit():
             idx = int(choice) - 1
             if 0 <= idx < len(contacts):
@@ -2126,6 +2192,41 @@ def handle_command(message, from_number):
             return report
         sessions.pop(from_number, None)
         return None  # ימשיך לטיפול רגיל
+
+    # === תשלום ללקוח דרך סטטוס בית: בחירת לקוח ===
+    if pending == "landlord_payment_contact_choice":
+        contacts_lp = session.get("contacts", [])  # list of (cname, cid)
+        aname_lp = session.get("aname", "")
+        choice = message.strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(contacts_lp):
+                cname, cid = contacts_lp[idx]
+                sessions[from_number] = {"pending": "landlord_payment_amount",
+                    "contact_name": cname, "contact_id": cid, "aname": aname_lp}
+                return f"👤 *{cname}*\nכמה שילם? (רק סכום, לדוגמא: 100)\n0 לביטול | 9 לתפריט ראשי"
+        return f"❓ כתוב מספר בין 1 ל-{len(contacts_lp)}"
+
+    # === תשלום ללקוח דרך סטטוס בית: סכום + שיטה ===
+    if pending == "landlord_payment_amount":
+        cname_lp = session.get("contact_name", "")
+        cid_lp = session.get("contact_id", "")
+        aname_lp = session.get("aname", "")
+        msg_parts = message.strip().split()
+        # צורת: "100" או "100 מזומן" או "100 העברה"
+        try:
+            amount_lp = float(msg_parts[0].replace(',', ''))
+        except:
+            return "❓ כתוב סכום בלבד (לדוגמא: 100)"
+        method_lp = "מזומן"
+        if len(msg_parts) > 1:
+            m = msg_parts[1]
+            if "העבר" in m or "ציאפ" in m:
+                method_lp = "העברה ציאפ"
+        sessions.pop(from_number, None)
+        contact_obj_lp = {"id": cid_lp, "Full_Name": cname_lp,
+                          "Account_Name": {"name": aname_lp}}
+        return _process_payment_for_contact(contact_obj_lp, amount_lp, method_lp, from_number)
 
     # === בחירת בעל בית לעדכון פספורטות במאסס ===
     if pending == "choose_account_bulk_passport":
@@ -5251,13 +5352,9 @@ def webhook():
         
         reply = handle_command(incoming_msg, from_number)
         
-        # הוסף ציטוט של ההודעה המקורית בתחילת התשובה
-        quote = f"📩 \"{incoming_msg}\"\n─────────────\n"
-        full_reply = quote + reply
-        
         # פצל הודעה ל-1400 תווים מקסימום (תמיכה בכמה חלקים)
-        parts = split_message(full_reply)
-        print(f"=== Reply: {len(full_reply)} chars, {len(parts)} part(s) ===")
+        parts = split_message(reply)
+        print(f"=== Reply: {len(reply)} chars, {len(parts)} part(s) ===")
         for i, part in enumerate(parts):
             twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
             if i < len(parts) - 1:
