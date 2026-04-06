@@ -1236,12 +1236,12 @@ HELP_TEXT = ("""
 👤 *לקוחות*
   • סטטוס [שם] → סטטוס מלא של לקוח (פרטים + חובות + מוצרים)
   • סטטוס בית [שם] → כל הלקוחות וחובות של בעל בית
-📎 *פספורטים*
+📎 *פספורטים* (שלח *פספורטים* לתפריט)
   • עדכון פספורט [שם] → חילוץ שם ויזה מפספורט קיים
   • פספורט בית [בעל בית] → עדכון פספורטים לכל לקוחות בבית
   • פספורט כללי → עדכון פספורטים לבעלי בתים לפי בחירה
   • תמונה + "פספורט [שם]" → העלאה + עדכון שם ויזה אוטומטי
-📷 *פרופילים*
+📷 *פרופילים* (שלח *פרופילים* לתפריט)
   • תמונה + "פרופיל [שם]" → העלאה + מיקוד פנים + עדכון בזוהו
   • פרופיל בית [בעל בית] → עדכון פרופיל לכל לקוחות בבית
   • פרופיל כללי → עדכון פרופיל לבעלי בתים לפי בחירה
@@ -1266,21 +1266,16 @@ MAIN_MENU_TEXT = ("""
 5. סטטוס [שם]
 6. סטטוס בית [שם]
 📎 *פספורטים*
-8. עדכון פספורט [שם]
-9. פספורט בית [בעל בית]
-10. פספורט כללי
+8. פספורטים ←
 📷 *פרופילים*
-11. פרופיל בית [בעל בית]
-12. פרופיל כללי
-13. תיקון פרופיל [שם]
-14. בדוק פרופיל בית [בעל בית]
-📊 *דוחות*
-15. דוח יומי
-16. כל הדוחות
-17. חובות פתוחים
+9. פרופילים ←
+📃 *דוחות*
+10. דוח יומי
+11. כל הדוחות
+12. חובות פתוחים
 🔀 *כלים*
-18. מיזוג לקוחות
-19. חסר פספורט
+13. מיזוג לקוחות
+14. חסר פספורט
 ────────────────────────────
 💡 לפרטים נוספים כתוב *עזרה*
 """)
@@ -1566,6 +1561,8 @@ def build_customer_status(name_query: str, contact=None) -> str:
     if aname:
         lines.append(SEP)
         lines.append(f"🏠 לסטטוס בית *{aname}* - כתוב *8*")
+    if unpaid:
+        lines.append(f"💳 לתשלום חשבונית - כתוב *7*")
     lines.append("0 לביטול | 9 לתפריט ראשי")
     return "\n".join(lines), aname, cid
 
@@ -2096,8 +2093,9 @@ def handle_command(message, from_number):
             if 0 <= idx < len(contacts):
                 sessions.pop(from_number, None)
                 status_text, aname, cid = build_customer_status(name_q, contact=contacts[idx])
+                cname_s = contacts[idx].get("Full_Name", name_q)
                 if aname:
-                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname}
+                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname, "cid": cid, "cname": cname_s}
                 return status_text
         return f"❓ כתוב מספר בין 1 ל-{len(contacts)}"
 
@@ -2168,15 +2166,21 @@ def handle_command(message, from_number):
                 sessions.pop(from_number, None)
                 # בנה contact dict מינימלי ל-build_customer_status
                 contact_obj = {"id": cid, "Full_Name": cname}
-                status_text, aname, _ = build_customer_status(cname, contact=contact_obj)
+                status_text, aname, cid_s = build_customer_status(cname, contact=contact_obj)
                 if aname:
-                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname}
+                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname, "cid": cid_s, "cname": cname}
                 return status_text
         return f"❓ כתוב מספר בין 1 ל-{len(contacts)} או 10 לכל הרשימה"
 
-    # === ניווט אחרי סטטוס לקוח: 8 לסטטוס בית ===
+    # === ניווט אחרי סטטוס לקוח: 7 לתשלום, 8 לסטטוס בית ===
     if pending == "customer_status_nav":
         aname = session.get("aname", "")
+        cid_nav = session.get("cid", "")
+        cname_nav = session.get("cname", "")
+        if message.strip() == "7":
+            # תשלום דרך סטטוס לקוח - עבור ל-payment flow
+            sessions.pop(from_number, None)
+            return handle_command(f"תשלום {cname_nav}", from_number)
         if message.strip() == "8" and aname:
             sessions.pop(from_number, None)
             result = build_landlord_report(aname)
@@ -2410,18 +2414,13 @@ def handle_command(message, from_number):
         "4":  "תשלום",
         "5":  "סטטוס",
         "6":  "סטטוס בית",
-        "8":  "עדכון פספורט",
-        "9":  "פספורט בית",
-        "10": "פספורט כללי",
-        "11": "פרופיל בית",
-        "12": "פרופיל כללי",
-        "13": "תיקון פרופיל",
-        "14": "בדוק פרופיל בית",
-        "15": "דוח יומי",
-        "16": "כל הדוחות",
-        "17": "חובות פתוחים",
-        "18": "מיזוג לקוחות",
-        "19": "חסר פספורט",
+        "8":  "פספורטים",
+        "9":  "פרופילים",
+        "10": "דוח יומי",
+        "11": "כל הדוחות",
+        "12": "חובות פתוחים",
+        "13": "מיזוג לקוחות",
+        "14": "חסר פספורט",
     }
     if not pending and message.strip() in MENU_SHORTCUTS:
         sessions.pop(from_number, None)
@@ -3505,6 +3504,58 @@ def handle_command(message, from_number):
         threading.Thread(target=_run_general_profile, daemon=True).start()
         return f"⏳ מתחיל עדכון פרופילים ל-{len(chosen)} בעלי בתים..."
 
+    # === תפריט פספורטים ===
+    if msg_s == "פספורטים":
+        sessions[from_number] = {"pending": "passport_submenu"}
+        return ("📎 *פספורטים* - בחר פעולה:\n"
+                "────────────────────────────\n"
+                "1. עדכון פספורט [שם]\n"
+                "2. פספורט בית [בעל בית]\n"
+                "3. פספורט כללי\n"
+                "4. חסר פספורט\n"
+                "────────────────────────────\n"
+                "0 לביטול | 9 לתפריט ראשי")
+
+    # === תפריט פרופילים ===
+    if msg_s == "פרופילים":
+        sessions[from_number] = {"pending": "profile_submenu"}
+        return ("📷 *פרופילים* - בחר פעולה:\n"
+                "────────────────────────────\n"
+                "1. פרופיל בית [בעל בית]\n"
+                "2. פרופיל כללי\n"
+                "3. תיקון פרופיל [שם]\n"
+                "4. בדוק פרופיל בית [בעל בית]\n"
+                "────────────────────────────\n"
+                "0 לביטול | 9 לתפריט ראשי")
+
+    # === טיפול בבחירת תפריט פספורטים ===
+    if pending == "passport_submenu":
+        ch = message.strip()
+        sessions.pop(from_number, None)
+        if ch == "1":
+            return handle_command("עדכון פספורט ", from_number)
+        elif ch == "2":
+            return handle_command("פספורט בית ", from_number)
+        elif ch == "3":
+            return handle_command("פספורט כללי", from_number)
+        elif ch == "4":
+            return handle_command("חסר פספורט", from_number)
+        return handle_command("פספורטים", from_number)
+
+    # === טיפול בבחירת תפריט פרופילים ===
+    if pending == "profile_submenu":
+        ch = message.strip()
+        sessions.pop(from_number, None)
+        if ch == "1":
+            return handle_command("פרופיל בית ", from_number)
+        elif ch == "2":
+            return handle_command("פרופיל כללי", from_number)
+        elif ch == "3":
+            return handle_command("תיקון פרופיל ", from_number)
+        elif ch == "4":
+            return handle_command("בדוק פרופיל בית ", from_number)
+        return handle_command("פרופילים", from_number)
+
     # === פספורט כללי - בחירת בעלי בתים לעדכון ===
     if msg_s == "פספורט כללי":
         sessions[from_number] = {"pending": "passport_filter_type"}
@@ -3698,8 +3749,9 @@ def handle_command(message, from_number):
             if len(contacts) == 1:
                 sessions.pop(from_number, None)
                 status_text, aname, cid = build_customer_status(name_q, contact=contacts[0])
+                cname_s0 = contacts[0].get("Full_Name", name_q)
                 if aname:
-                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname}
+                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname, "cid": cid, "cname": cname_s0}
                 return status_text
             sessions[from_number] = {"pending": "choose_contact_status", "contacts": contacts, "name_q": name_q}
             return _format_contact_choice_menu(contacts, "סטטוס")
@@ -5334,7 +5386,10 @@ def webhook():
 
         # === טיפול בתמונת פספורט נכנסת ===
         # פורמט: תמונה + כיתוב "פספורט [שם לקוח]"
-        if num_media > 0 and incoming_msg.strip().startswith("פרופיל "):
+        if incoming_msg.strip().startswith("פרופיל "):
+            if num_media == 0:
+                _send_reply("❌ חסרה תמונה!\nשלח תמונה יחד עם הכיתוב *פרופיל [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7]*", from_number, incoming_msg)
+                return str(MessagingResponse())
             name_q = incoming_msg.strip()[len("פרופיל "):].strip()
             media_url = request.values.get("MediaUrl0", "")
             media_type = request.values.get("MediaContentType0", "image/jpeg")
@@ -5342,7 +5397,10 @@ def webhook():
             _send_reply(reply, from_number, incoming_msg)
             return str(MessagingResponse())
 
-        if num_media > 0 and incoming_msg.strip().startswith("פספורט "):
+        if incoming_msg.strip().startswith("פספורט "):
+            if num_media == 0:
+                _send_reply("❌ חסרה תמונה!\nשלח תמונה יחד עם הכיתוב *פספורט [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7]*", from_number, incoming_msg)
+                return str(MessagingResponse())
             name_q = incoming_msg.strip()[len("פספורט "):].strip()
             media_url = request.values.get("MediaUrl0", "")
             media_type = request.values.get("MediaContentType0", "image/jpeg")
