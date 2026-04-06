@@ -1059,17 +1059,31 @@ def _fetch_deposits_today() -> list:
         kind = (rec.get("payment_kind") or "לא ידוע").strip()
         contact_obj = rec.get("Contact", {})
         cname = contact_obj.get("name", "") if isinstance(contact_obj, dict) else str(contact_obj)
-        # שלוף חשבונית לקבלת בעל בית
+        cid = contact_obj.get("id", "") if isinstance(contact_obj, dict) else ""
+        # שלוף בעל בית מהלקוח (לא מהחשבונית) כדי שישאר נכון גם אחרי שחשבונית עברה לבעל בית חשבוניות סגורות
         aname = ""
-        inv_obj = rec.get("Invoice", {})
-        if isinstance(inv_obj, dict) and inv_obj.get("id"):
+        if cid:
             try:
-                inv_data = zoho_get(f"Invoices/{inv_obj['id']}")
-                if inv_data:
-                    acc = inv_data[0].get("Account_Name", {})
+                contact_data = zoho_get(f"Contacts/{cid}", {"fields": "Full_Name,Account_Name"})
+                if contact_data:
+                    acc = contact_data[0].get("Account_Name", {})
                     aname = acc.get("name", "") if isinstance(acc, dict) else str(acc)
             except:
                 pass
+        # fallback: אם לא נמצא בעל בית מהלקוח, נסה מהחשבונית
+        if not aname:
+            inv_obj = rec.get("Invoice", {})
+            if isinstance(inv_obj, dict) and inv_obj.get("id"):
+                try:
+                    inv_data = zoho_get(f"Invoices/{inv_obj['id']}")
+                    if inv_data:
+                        acc = inv_data[0].get("Account_Name", {})
+                        fallback_aname = acc.get("name", "") if isinstance(acc, dict) else str(acc)
+                        # אל תשתמש בבעל בית חשבוניות סגורות כפולבק
+                        if 'חשבוניות סגורות' not in fallback_aname:
+                            aname = fallback_aname
+                except:
+                    pass
         enriched.append({"kind": kind, "amount": amt, "contact": cname, "landlord": aname})
     return enriched
 
