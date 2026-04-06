@@ -1206,7 +1206,7 @@ def build_deposits_by_landlord(records: list) -> str:
         by_landlord[a]["kinds"][k] += rec["amount"]
     lines = [f"🏠 *הפקדות לפי בעל בית - {today_str}*", SEP]
     grand = 0
-    for aname, data in sorted(by_landlord.items()):
+    for aname, data in sorted(by_landlord.items(), key=lambda x: -x[1]["total"]):
         grand += data["total"]
         lines.append(f"🏠 *{aname}* - ₪{data['total']}")
         for kind, amt in sorted(data["kinds"].items()):
