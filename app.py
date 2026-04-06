@@ -2301,6 +2301,30 @@ def handle_command(message, from_number):
         sessions.pop(from_number, None)
         return MAIN_MENU_TEXT.strip()
 
+    # === קיצורי מספרים לתפריט ===
+    MENU_SHORTCUTS = {
+        "1":  "חשבונית",
+        "2":  "מחק חשבונית אחרונה",
+        "4":  "תשלום",
+        "5":  "סטטוס",
+        "6":  "סטטוס בית",
+        "8":  "עדכון פספורט",
+        "9":  "פספורט בית",
+        "10": "פספורט כללי",
+        "11": "פרופיל בית",
+        "12": "פרופיל כללי",
+        "13": "תיקון פרופיל",
+        "14": "בדוק פרופיל בית",
+        "15": "דוח יומי",
+        "16": "כל הדוחות",
+        "17": "חובות פתוחים",
+        "18": "מיזוג לקוחות",
+        "19": "חסר פספורט",
+    }
+    if not pending and message.strip() in MENU_SHORTCUTS:
+        sessions.pop(from_number, None)
+        return handle_command(MENU_SHORTCUTS[message.strip()], from_number, media_url=None, media_type=None)
+
     # === חובות פתוחים ===
     if message.strip() in ["חובות פתוחים", "חובות"]:
         sessions.pop(from_number, None)
