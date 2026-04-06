@@ -1183,8 +1183,9 @@ def build_deposits_by_contact(records: list) -> str:
             lines.append("─" * 14)
             prev_landlord = landlord
         lines.append(f"  👤 *{cname}* - ₪{data['total']}")
-        for kind, amt in sorted(data["kinds"].items()):
-            lines.append(f"     • {kind}: ₪{amt}")
+        if len(data["kinds"]) > 1:
+            for kind, amt in sorted(data["kinds"].items()):
+                lines.append(f"     • {kind}: ₪{amt}")
     lines.append("")
     lines.append(SEP)
     lines.append(f"📊 סהכ: *₪{grand}*")
