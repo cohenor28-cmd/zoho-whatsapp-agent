@@ -2455,11 +2455,31 @@ def handle_command(message, from_number):
                     moved_inv = 0
                     moved_att = 0
                     moved_notes = 0
+                    moved_payments = 0
                     # 1. העבר חשבוניות מהישן לחדש
                     for inv in discard_invs:
                         res = zoho_put(f"Invoices/{inv['id']}", {"data": [{"id": inv["id"], "Contact_Name": {"id": keep_id}}]})
                         if res.get("data", [{}])[0].get("code") == "SUCCESS":
                             moved_inv += 1
+                    # 1b. העבר בקרת תשלומים (CustomModule1) מהלקוח הישן לחדש
+                    pay_page = 1
+                    while True:
+                        pay_batch, pay_info = zoho_get_full("CustomModule1/search", {
+                            "criteria": f"(Contact:equals:{discard_id})",
+                            "fields": "id,Contact,Invoice",
+                            "per_page": 200,
+                            "page": pay_page
+                        })
+                        if not pay_batch:
+                            break
+                        for pay in pay_batch:
+                            pay_id = pay["id"]
+                            res_p = zoho_put(f"CustomModule1/{pay_id}", {"data": [{"id": pay_id, "Contact": {"id": keep_id}}]})
+                            if res_p.get("data", [{}])[0].get("code") == "SUCCESS":
+                                moved_payments += 1
+                        if not pay_info.get("more_records", False):
+                            break
+                        pay_page += 1
                     # 2. העבר קבצים מצורפים (Attachments) - הורד והעלה מחדש
                     r_att = requests.get(f"{domain}/crm/v2/Contacts/{discard_id}/Attachments", headers=headers_z, timeout=15)
                     if r_att.status_code == 200 and r_att.json().get("data"):
@@ -2503,8 +2523,8 @@ def handle_command(message, from_number):
                     # 4. סמן את הלקוח הישן כלא פעיל
                     zoho_put(f"Contacts/{discard_id}", {"data": [{"id": discard_id, "Contact_Status": "לא פעיל"}]})
                     results.append(
-                        f"✅ מוזג: *{keep.get('Full_Name')}* ← *{discard.get('Full_Name')}*\n"
-                        f"   חשבוניות: {moved_inv} | קבצים: {moved_att} | הערות: {moved_notes}"
+                        f"✅ מוזג: *{discard.get('Full_Name')}* → *{keep.get('Full_Name')}*\n"
+                        f"   חשבוניות: {moved_inv} | תשלומים: {moved_payments} | קבצים: {moved_att} | הערות: {moved_notes}"
                     )
                 _send_reply("🔀 *סיכום מיזוג:*\n" + "\n".join(results), from_number)
             except Exception as e:
