@@ -2454,8 +2454,8 @@ def handle_command(message, from_number):
                         dates = []
                         for inv in invs:
                             ct = inv.get("Created_Time") or ""
-                        if ct:
-                            dates.append(ct)
+                            if ct:
+                                dates.append(ct)
                         return max(dates) if dates else ""
                     d1 = _latest_invoice_date(inv1)
                     d2 = _latest_invoice_date(inv2)
