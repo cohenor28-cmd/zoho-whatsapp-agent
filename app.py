@@ -2240,7 +2240,7 @@ def handle_command(message, from_number):
                         rc = requests.get(f"{domain}/crm/v5/Contacts/search",
                             headers=headers_z,
                             params={"criteria": f"(Account_Name.id:equals:{acc_id})",
-                                    "fields": "Full_Name,Visa_Name1,id",
+                                    "fields": "Full_Name,Visa_Name1,id,field11",
                                     "per_page": 200, "page": contacts_page})
                         if rc.status_code != 200: break
                         batch_c = rc.json().get("data", [])
@@ -2248,26 +2248,31 @@ def handle_command(message, from_number):
                         contacts.extend(batch_c)
                         if not rc.json().get("info", {}).get("more_records"): break
                         contacts_page += 1
-                    # סנן: לקוחות ללא שם ויזה עם חשבונית בשנה האחרונה
+                    # סנן: לקוחות ללא שם ויזה עם חשבונית בשנה האחרונה או קו פעיל
                     missing_names = []
                     for c in contacts:
                         visa = c.get("Visa_Name1", "") or ""
                         if visa.strip():
                             continue  # יש שם ויזה - דלג
                         c_id = c.get("id")
+                        # בדוק קו פעיל (field11 = 1 או 2)
+                        active_lines = c.get("field11", None)
+                        has_active_line = active_lines is not None and str(active_lines).strip() not in ["", "0", "None"]
                         # בדוק אם יש חשבונית בשנה האחרונה
-                        try:
-                            ri = requests.get(
-                                f"{domain}/crm/v5/Invoices/search",
-                                headers=headers_z,
-                                params={
-                                    "criteria": f"(Contact_Name.id:equals:{c_id})AND(Created_Time:greater_equal:{one_year_ago})",
-                                    "fields": "id", "per_page": 1
-                                }, timeout=15)
-                            has_recent = ri.status_code == 200 and bool(ri.json().get("data"))
-                        except Exception:
-                            has_recent = False
-                        if has_recent:
+                        has_recent = False
+                        if not has_active_line:
+                            try:
+                                ri = requests.get(
+                                    f"{domain}/crm/v5/Invoices/search",
+                                    headers=headers_z,
+                                    params={
+                                        "criteria": f"(Contact_Name.id:equals:{c_id})AND(Created_Time:greater_equal:{one_year_ago})",
+                                        "fields": "id", "per_page": 1
+                                    }, timeout=15)
+                                has_recent = ri.status_code == 200 and bool(ri.json().get("data"))
+                            except Exception:
+                                has_recent = False
+                        if has_active_line or has_recent:
                             missing_names.append(c.get("Full_Name", ""))
                     if not missing_names:
                         continue
