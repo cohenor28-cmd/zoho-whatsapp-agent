@@ -2212,6 +2212,9 @@ def handle_command(message, from_number):
                 token, domain = get_access_token()
                 headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
                 one_year_ago = (_dt.datetime.utcnow() - _dt.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+                accounts_with_missing = 0
+                total_missing = 0
+                account_details = []  # רשימת (שם_בעל_בית, [שמות_לקוחות])
                 # טען את כל בעלי הבתים
                 all_accounts = []
                 page = 1
@@ -2228,8 +2231,6 @@ def handle_command(message, from_number):
                 if not all_accounts:
                     _send_reply("❌ לא נמצאו בעלי בתים", from_number)
                     return
-                total_missing = 0
-                accounts_with_missing = 0
                 for acc in all_accounts:
                     acc_id = acc.get("id")
                     acc_name = acc.get("Account_Name", "")
@@ -2278,6 +2279,7 @@ def handle_command(message, from_number):
                         continue
                     total_missing += len(missing_names)
                     accounts_with_missing += 1
+                    account_details.append((acc_name, missing_names))
                     # בדוק אם יש כבר הערה "חסר פספורט" ב-Account
                     note_content = "חסר פספורט:\n" + "\n".join(f"• {n}" for n in missing_names)
                     try:
@@ -2311,11 +2313,15 @@ def handle_command(message, from_number):
                                 timeout=15)
                     except Exception as e_note:
                         pass  # המשך גם אם הערה נכשלה
-                _send_reply(
-                    f"✅ *סריקת חסר פספורט הסתיימה*\n"
-                    f"📋 בעלי בתים עם לקוחות חסרי פספורט: {accounts_with_missing}\n"
-                    f"👤 סה\"כ לקוחות ללא פספורט: {total_missing}",
-                    from_number)
+                # בנה סיכום מפורט
+                summary_lines = [f"✅ *סריקת חסר פספורט הסתיימה*"]
+                summary_lines.append(f"📋 בעלי בתים: {accounts_with_missing} | 👤 לקוחות: {total_missing}\n")
+                for acc_name_d, names_list in account_details:
+                    summary_lines.append(f"*{acc_name_d}*:")
+                    for n in names_list:
+                        summary_lines.append(f"  • {n}")
+                    summary_lines.append("")
+                _send_reply("\n".join(summary_lines), from_number)
             except Exception as e:
                 _send_reply(f"❌ שגיאה: {e}", from_number)
         threading.Thread(target=_find_missing_passport, daemon=True).start()
