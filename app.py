@@ -2424,7 +2424,7 @@ def handle_command(message, from_number):
     }
     if not pending and message.strip() in MENU_SHORTCUTS:
         sessions.pop(from_number, None)
-        return handle_command(MENU_SHORTCUTS[message.strip()], from_number, media_url=None, media_type=None)
+        return handle_command(MENU_SHORTCUTS[message.strip()], from_number)
 
     # === חובות פתוחים ===
     if message.strip() in ["חובות פתוחים", "חובות"]:
