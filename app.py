@@ -1286,12 +1286,11 @@ MAIN_MENU_TEXT = ("""
 7. כל הדוחות
 8. חובות פתוחים
 🔀 *כלים*
+9. פרופילים
 10. מיזוג לקוחות
 11. חסר פספורט
 12. פספורטים
-📷 שלח *פרופילים* לתפריט פרופילים
 ────────────────────────────
-9️⃣ *9* = תפריט ראשי תמיד
 💡 לפרטים נוספים כתוב *עזרה*
 """)
 
@@ -2428,11 +2427,7 @@ def handle_command(message, from_number):
         sessions.pop(from_number, None)
         return MAIN_MENU_TEXT.strip()
 
-    # === 9 = תפריט ראשי תמיד (1-סדר בכל מצב) ===
-    if message.strip() == "9":
-        sessions.pop(from_number, None)
-        return MAIN_MENU_TEXT.strip()
-    # === קיצורי מספרים לתפריט ===
+    # === קיצורי מספרים לתפריט (רק כשאין פעולה פעילה) ===
     MENU_SHORTCUTS = {
         "1":  "חשבונית",
         "2":  "מחק חשבונית אחרונה",
@@ -2442,6 +2437,7 @@ def handle_command(message, from_number):
         "6":  "דוח יומי",
         "7":  "כל הדוחות",
         "8":  "חובות פתוחים",
+        "9":  "פרופילים",
         "10": "מיזוג לקוחות",
         "11": "חסר פספורט",
         "12": "פספורטים",
@@ -5617,7 +5613,8 @@ def create_invoice_and_pay_api():
 
         # 5. שלח הודעת WhatsApp לאישור
         acc_name = acc_obj.get("name", "") if isinstance(acc_obj, dict) else ""
-        msg = (f"✅ חשבונית נוצרה ושולמה!\n"
+        msg = (f"📱 *לקוחות מרוחקים - ביקורית*\n"
+               f"✅ חשבונית נוצרה ושולמה!\n"
                f"👤 {contact['Full_Name']}\n"
                f"🏠 {acc_name}\n"
                f"📦 {product.get('Product_Name')}\n"
