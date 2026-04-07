@@ -4150,23 +4150,33 @@ def handle_command(message, from_number):
         stop_words = {"שילם", "שולם", "שלם", "תשלום", "מזומן", "העברה", "אשראי", "צ'ק",
                       "הוסף", "לקוח", "חדש", "פתח", "צור", "קווים", "פעילים", "חשבונית",
                       "כן", "לא", "ביטול", "תפריט"}
-        matched_product = None
+        # בנה מפת מילה בתוך שם מוצר (stripped) -> רשימת מוצרים
+        word_to_products = {}  # word -> list of products containing it
         for p in all_prods:
             pname = p.get("Product_Name", "").strip()
             if not pname or len(pname) < 3:
                 continue
-            pname_lower = pname.lower()
-            # בדוק שכל מילות המוצר מופיעות בהודעה
-            pwords = pname_lower.split()
-            # נקה תווים מיוחדים ממילות המוצר (כמו מקומי- במקום מקומי)
-            pwords_clean = [re.sub(r'[^\u05d0-\u05ea\u05f0-\u05f4a-z0-9]', '', pw) for pw in pwords]
-            # בדוק אם כל מילה משמעותית (אורך >= 4) מופיעה בהודעה
-            sig_pwords = [pw for pw in pwords_clean if len(pw) >= 4]
-            if sig_pwords and all(pw in msg_lower_check for pw in sig_pwords):
-                # וודא שאף מילה מהמוצר לא היא מילת עצירה
-                if not any(pw in stop_words for pw in pwords_clean):
-                    matched_product = p
-                    break
+            pname_clean = re.sub(r'[^\u05d0-\u05ea\u05f0-\u05f4a-z0-9 ]', ' ', pname.lower())
+            for pw in pname_clean.split():
+                if len(pw) >= 3 and pw not in stop_words and not pw.isdigit():
+                    word_to_products.setdefault(pw, []).append(p)
+        # בדוק כל מילה בהודעה - אם היא מזהה מוצר יחיד
+        matched_product = None
+        msg_words_check = [re.sub(r'[^\u05d0-\u05ea\u05f0-\u05f4a-z0-9]', '', w)
+                           for w in msg_lower_check.split()
+                           if len(w) >= 3 and not w.isdigit()]
+        for mw in msg_words_check:
+            if mw in stop_words:
+                continue
+            candidates = word_to_products.get(mw, [])
+            if len(candidates) == 1:
+                # מילה ייחודית למוצר אחד
+                matched_product = candidates[0]
+                break
+            elif len(candidates) > 1:
+                # מילה מופיעה במספר מוצרים - שמור לבדיקה נוספת
+                matched_product = candidates[0]  # קח את הראשון, יושאל בהמשך
+                break
         if matched_product:
             pname = matched_product.get("Product_Name", "")
             print(f"Product fallback: found '{pname}' in message, forcing create_invoice")
