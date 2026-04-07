@@ -1261,24 +1261,24 @@ HELP_TEXT = ("""
 MAIN_MENU_TEXT = ("""
 📋 *תפריט ראשי*
 ────────────────────────────
-🧧 *חשבוניות*
+🧧 *חשבוניות ותשלומים*
 1. חשבונית [לקוח] [בעל בית] [מוצר]
 2. מחק חשבונית אחרונה
-💰 *תשלומים*
-4. תשלום [לקוח] [סכום] [שיטה]
+3. תשלום [לקוח] [סכום] [שיטה]
 👤 *לקוחות*
-5. סטטוס [שם]
-6. דוח בית [שם]
+4. סטטוס [שם]
+5. דוח בית [שם]
 📃 *דוחות*
-10. דוח יומי
-11. כל הדוחות
-12. חובות פתוחים
+6. דוח יומי
+7. כל הדוחות
+8. חובות פתוחים
 🔀 *כלים*
-13. מיזוג לקוחות
-14. חסר פספורט
-📎 8. פספורטים ←
-📷 9. פרופילים ←
+10. מיזוג לקוחות
+11. חסר פספורט
+📎 12. פספורטים ←
+📷 13. פרופילים ←
 ────────────────────────────
+9️⃣ *9* = תפריט ראשי תמיד
 💡 לפרטים נוספים כתוב *עזרה*
 """)
 
@@ -1804,8 +1804,8 @@ def handle_command(message, from_number):
         cancel_flags[from_number] = True
         return "✅ בוטל!"
 
-    # === 9 = חזרה לתפריט ראשי ===
-    if pending and msg_nav == "9":
+    # === 9 = חזרה לתפריט ראשי (תמיד!) ===
+    if msg_nav == "9":
         sessions.pop(from_number, None)
         return MAIN_MENU_TEXT.strip()
 
@@ -2414,16 +2414,16 @@ def handle_command(message, from_number):
     MENU_SHORTCUTS = {
         "1":  "חשבונית",
         "2":  "מחק חשבונית אחרונה",
-        "4":  "תשלום",
-        "5":  "סטטוס",
-        "6":  "דוח בית",
-        "8":  "פספורטים",
-        "9":  "פרופילים",
-        "10": "דוח יומי",
-        "11": "כל הדוחות",
-        "12": "חובות פתוחים",
-        "13": "מיזוג לקוחות",
-        "14": "חסר פספורט",
+        "3":  "תשלום",
+        "4":  "סטטוס",
+        "5":  "דוח בית",
+        "6":  "דוח יומי",
+        "7":  "כל הדוחות",
+        "8":  "חובות פתוחים",
+        "10": "מיזוג לקוחות",
+        "11": "חסר פספורט",
+        "12": "פספורטים",
+        "13": "פרופילים",
     }
     if not pending and message.strip() in MENU_SHORTCUTS:
         sessions.pop(from_number, None)
@@ -4191,7 +4191,38 @@ def handle_command(message, from_number):
 
         products = find_product(product_name)
         if not products:
-            return f"❌ לא מצאתי מוצר '{product_name}'"
+            # נסה למצוא מוצר מהקאש לפי מילות בהודעה המקורית
+            all_prods_fb = get_cached_products()
+            msg_lower_fb = message.strip().lower()
+            stop_words_fb = {'שילם', 'שולם', 'שלם', 'תשלום', 'מזומן', 'העברה', 'אשראי', "צ'ק",
+                              'הוסף', 'לקוח', 'חדש', 'פתח', 'צור', 'קווים', 'פעילים', 'חשבונית',
+                              'כן', 'לא', 'ביטול', 'תפריט'}
+            for p_fb in all_prods_fb:
+                pn_fb = p_fb.get('Product_Name', '').strip()
+                if not pn_fb or len(pn_fb) < 3:
+                    continue
+                pwords_fb = pn_fb.lower().split()
+                if all(pw in msg_lower_fb for pw in pwords_fb):
+                    if not any(pw in stop_words_fb for pw in pwords_fb):
+                        print(f'Product cache fallback in create_invoice: found {pn_fb}')
+                        products = [p_fb]
+                        product_name = pn_fb
+                        # עדכן שמות לקוח/בעל בית לפי מה שנשאר אחרי הסרת המוצר
+                        rem_fb = message.strip()
+                        for pw in pn_fb.split():
+                            rem_fb = re.sub(re.escape(pw), '', rem_fb, flags=re.IGNORECASE).strip()
+                        rem_fb = re.sub(r'\b\d+\b', '', rem_fb).strip()
+                        rem_fb = re.sub(r'\s+', ' ', rem_fb).strip()
+                        wl_fb = rem_fb.split()
+                        if wl_fb and not contact_name:
+                            contact_name = wl_fb[0]
+                            account_name = ' '.join(wl_fb[1:]) if len(wl_fb) > 1 else wl_fb[0]
+                            if len(wl_fb) == 1:
+                                contact_name = ''
+                                account_name = wl_fb[0]
+                        break
+            if not products:
+                return f"❌ לא מצאתי מוצר '{product_name}'"
 
         # אם יש יותר ממוצר אחד - נסה לצמצם
         if len(products) > 1:
