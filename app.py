@@ -4158,9 +4158,13 @@ def handle_command(message, from_number):
             pname_lower = pname.lower()
             # בדוק שכל מילות המוצר מופיעות בהודעה
             pwords = pname_lower.split()
-            if all(pw in msg_lower_check for pw in pwords):
+            # נקה תווים מיוחדים ממילות המוצר (כמו מקומי- במקום מקומי)
+            pwords_clean = [re.sub(r'[^\u05d0-\u05ea\u05f0-\u05f4a-z0-9]', '', pw) for pw in pwords]
+            # בדוק אם כל מילה משמעותית (אורך >= 4) מופיעה בהודעה
+            sig_pwords = [pw for pw in pwords_clean if len(pw) >= 4]
+            if sig_pwords and all(pw in msg_lower_check for pw in sig_pwords):
                 # וודא שאף מילה מהמוצר לא היא מילת עצירה
-                if not any(pw in stop_words for pw in pwords):
+                if not any(pw in stop_words for pw in pwords_clean):
                     matched_product = p
                     break
         if matched_product:
@@ -4244,8 +4248,11 @@ def handle_command(message, from_number):
                 if not pn_fb or len(pn_fb) < 3:
                     continue
                 pwords_fb = pn_fb.lower().split()
-                if all(pw in msg_lower_fb for pw in pwords_fb):
-                    if not any(pw in stop_words_fb for pw in pwords_fb):
+                # נקה תווים מיוחדים
+                pwords_fb_clean = [re.sub(r'[^\u05d0-\u05ea\u05f0-\u05f4a-z0-9]', '', pw) for pw in pwords_fb]
+                sig_pwords_fb = [pw for pw in pwords_fb_clean if len(pw) >= 4]
+                if sig_pwords_fb and all(pw in msg_lower_fb for pw in sig_pwords_fb):
+                    if not any(pw in stop_words_fb for pw in pwords_fb_clean):
                         print(f'Product cache fallback in create_invoice: found {pn_fb}')
                         products = [p_fb]
                         product_name = pn_fb
