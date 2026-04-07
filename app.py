@@ -1647,7 +1647,7 @@ def build_landlord_report(name_query: str, account=None) -> tuple:
     lines = [
         f"🏠 *{aname}*",
         SEP,
-        f"🚨 חובות פתוחים: *₪{grand_debt}* | {len(invoices)} חשבונות | {len(by_contact)} לקוחות",
+        f"חובות פתוחים: *₪{grand_debt}* | {len(invoices)} חשבונות | {len(by_contact)} לקוחות",
         f"📞 קווים פעילים: *{total_active_lines}*",
         SEP,
     ]
@@ -1703,13 +1703,13 @@ def build_landlord_report(name_query: str, account=None) -> tuple:
         line_nums = line_numbers_map.get(cname, "")
         cid = contact_ids.get(cname, "")
         ordered_contacts.append((cname, cid))
-        lines.append(f"{idx}. 👤 *{cname}* | 📞 {active} קווים | 🚨 ₪{data['debt']}")
+        lines.append(f"{idx}. 👤 *{cname}* | 📞 {active} קווים | ₪{data['debt']}")
         if line_nums:
-            lines.append(f"   🔢 {line_nums}")
+            lines.append(f"   📞 {line_nums}")
         for i in data["invs"]:
-            lines.append(f"   {i['em']} ₪{i['total']} | {i['date']}")
+            lines.append(f"   ₪{i['total']} | {i['date']}")
             for p in i.get("products", []):
-                lines.append(f"     └ {p}")
+                lines.append(f"   📦 {p}")
         lines.append("")
     if rest_contacts:
         lines.append(f"10. 📝 עוד {len(rest_contacts)} לקוחות (כל הרשימה)")
@@ -2158,7 +2158,7 @@ def handle_command(message, from_number):
             for idx2, (cn, _) in enumerate(all_contacts, 1):
                 data = by_contact_map.get(cn, {"debt": 0})
                 active = active_lines_map.get(cn, 0)
-                lines.append(f"{idx2}. 👤 *{cn}* | 📞 {active} קווים | 🚨 ₪{data.get('debt',0)}")
+                lines.append(f"{idx2}. 👤 *{cn}* | 📞 {active} קווים | ₪{data.get('debt',0)}")
             lines.append("")
             lines.append("💡 שלח מספר לסטטוס מלא")
             lines.append("0 לביטול | 9 לתפריט ראשי")
