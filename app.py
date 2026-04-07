@@ -416,19 +416,32 @@ def find_product(product_name):
     if not product_name:
         print("find_product: empty product name")
         return []
-
     print(f"find_product: searching for '{product_name}'")
     product_lower = product_name.strip().lower()
     search_words = product_lower.split()
-
+    # הפרד מילות טקסט ממספרים
+    text_words = [w for w in search_words if not w.isdigit()]
+    num_words = [w for w in search_words if w.isdigit()]
     # שיפור: חיפוש מהקאש בזיכרון (מיידי!)
     all_products = get_cached_products()
     if all_products:
-        # סינון - כל המילים חייבות להופיע
+        # סינון - כל המילים חייבות להופיע (כולל מספרים)
         filtered = [p for p in all_products if all(w in p.get("Product_Name", "").lower() for w in search_words)]
         if filtered:
+            # אם יש יותר מ-3 תוצאות ויש מספרים בשאילתה - נסה ללא מספרים
+            if len(filtered) > 3 and num_words and text_words:
+                filtered_text = [p for p in all_products if all(w in p.get("Product_Name", "").lower() for w in text_words)]
+                if 0 < len(filtered_text) <= len(filtered):
+                    print(f"find_product: using text-only search, {len(filtered_text)} results (was {len(filtered)})")
+                    return filtered_text
             print(f"find_product: cache hit! {len(filtered)} results for '{product_name}'")
             return filtered
+        # אם לא נמצא עם כל המילים - נסה ללא מספרים (המספר הוא כנראה כמות)
+        if num_words and text_words:
+            filtered_text = [p for p in all_products if all(w in p.get("Product_Name", "").lower() for w in text_words)]
+            if filtered_text:
+                print(f"find_product: text-only hit! {len(filtered_text)} results for '{' '.join(text_words)}'")
+                return filtered_text
         # סינון חלקי - לפחות מילה אחת
         partial = [p for p in all_products if any(w in p.get("Product_Name", "").lower() for w in search_words)]
         if partial:
@@ -1803,8 +1816,13 @@ def handle_command(message, from_number):
         cancel_flags[from_number] = True
         return "✅ בוטל!"
 
-    # === 9 = חזרה לתפריט ראשי בפעולה פעילה ===
-    if pending and msg_nav == "9":
+    # === 9 = חזרה לתפריט ראשי בפעולה פעילה (לא כשבוחרים מרשימה) ===
+    _selection_states = {"product_choice", "contact_choice", "account_choice",
+                         "choose_landlord_contact", "choose_contact_for_status",
+                         "choose_account_for_status", "choose_contact_for_report",
+                         "choose_account_for_report", "choose_contact_for_payment",
+                         "choose_account_for_payment"}
+    if pending and msg_nav == "9" and pending not in _selection_states:
         sessions.pop(from_number, None)
         return MAIN_MENU_TEXT.strip()
 
