@@ -1286,11 +1286,12 @@ MAIN_MENU_TEXT = ("""
 7. כל הדוחות
 8. חובות פתוחים
 🔀 *כלים*
-9. פרופילים
 10. מיזוג לקוחות
 11. חסר פספורט
 12. פספורטים
+📷 שלח *פרופילים* לתפריט פרופילים
 ────────────────────────────
+9️⃣ *9* = תפריט ראשי תמיד
 💡 לפרטים נוספים כתוב *עזרה*
 """)
 
@@ -2427,6 +2428,10 @@ def handle_command(message, from_number):
         sessions.pop(from_number, None)
         return MAIN_MENU_TEXT.strip()
 
+    # === 9 = תפריט ראשי תמיד (1-סדר בכל מצב) ===
+    if message.strip() == "9":
+        sessions.pop(from_number, None)
+        return MAIN_MENU_TEXT.strip()
     # === קיצורי מספרים לתפריט ===
     MENU_SHORTCUTS = {
         "1":  "חשבונית",
@@ -2437,7 +2442,6 @@ def handle_command(message, from_number):
         "6":  "דוח יומי",
         "7":  "כל הדוחות",
         "8":  "חובות פתוחים",
-        "9":  "פרופילים",
         "10": "מיזוג לקוחות",
         "11": "חסר פספורט",
         "12": "פספורטים",
@@ -4186,12 +4190,37 @@ def handle_command(message, from_number):
             remaining_words = re.sub(r'\b\d+\b', '', remaining_words).strip()
             remaining_words = re.sub(r'\s+', ' ', remaining_words).strip()
             # remaining_words = שם לקוח + בעל בית
+            # נסה לחפש לקוח בזוהו מתוך המילים הנותרות
             words_left = remaining_words.split()
-            contact_guess = words_left[0] if words_left else ""
-            account_guess = " ".join(words_left[1:]) if len(words_left) > 1 else (words_left[0] if words_left else "")
-            if len(words_left) == 1:
-                contact_guess = ""
-                account_guess = words_left[0]
+            contact_guess = ""
+            account_guess = ""
+            if words_left:
+                # נסה כל צירוף מילים כלקוח ובדוק אם קיים
+                best_contact = None
+                best_account = None
+                # נסה צירופים של 1-3 מילים כלקוח
+                for size in range(min(3, len(words_left)), 0, -1):
+                    for start in range(len(words_left) - size + 1):
+                        candidate = " ".join(words_left[start:start+size])
+                        try:
+                            contacts_try = zoho_get("Contacts/search", {"word": candidate}) or []
+                            if contacts_try:
+                                best_contact = candidate
+                                # השאר = בעל בית
+                                remaining_for_account = [w for i, w in enumerate(words_left) if i < start or i >= start+size]
+                                best_account = " ".join(remaining_for_account)
+                                break
+                        except Exception:
+                            pass
+                    if best_contact:
+                        break
+                if best_contact:
+                    contact_guess = best_contact
+                    account_guess = best_account
+                else:
+                    # אם לא נמצא לקוח - שים הכל כבעל בית
+                    contact_guess = ""
+                    account_guess = remaining_words
             intent = {"action": "create_invoice", "product": pname, "contact": contact_guess, "account": account_guess, "price": price, "quantity": qty}
             print(f"Product fallback intent: {intent}")
     
