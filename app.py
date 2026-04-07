@@ -677,11 +677,14 @@ SYSTEM_PROMPT = """
 - quantity = כמות יחידות. מספר שמופיע לפני שם המוצר (בין 2 ל-30) = כמות. אם לא ציין כמות - שים 1. המספר חייב להיות בין 1 ל-30.
 - אמצעי תשלום: "מזומן", "העברה", "צ'ק", "אשראי" - ברירת מחדל "מזומן"
 - חשוב: מספרים כמו 050, 48, 155 שהם חלק משם המוצר - אל תשים ב-price ולא ב-quantity! רק מספרים שמייצגים סכום כסף או כמות
-- הבחנה בין quantity ל-price: מספר לפני שם המוצר (2-30) = quantity. מספר אחרי שם המוצר = price.
+- הבחנה בין quantity ל-price: מספר >= 50 = price (מחיר). מספר 2-49 = quantity (כמות). אין חשיבות למיקום המספר במשפט!
 
 דוגמאות ליצירת חשבונית:
 - "050 סוויט אילן" → {"action": "create_invoice", "product": "050 סוויט", "contact": "", "account": "אילן", "price": 0, "quantity": 1}
 - "3 בלוטוס קשת סאק דורון" → {"action": "create_invoice", "product": "בלוטוס קשת", "contact": "סאק", "account": "דורון", "price": 0, "quantity": 3}
+- "160 תכלת סומניק אילן" → {"action": "create_invoice", "product": "תכלת", "contact": "סומניק", "account": "אילן", "price": 160, "quantity": 1}
+- "תכלת 3 סומניק אילן" → {"action": "create_invoice", "product": "תכלת", "contact": "סומניק", "account": "אילן", "price": 0, "quantity": 3}
+- "160 תכלת 3 סומניק אילן" → {"action": "create_invoice", "product": "תכלת", "contact": "סומניק", "account": "אילן", "price": 160, "quantity": 3}
 - "5 מקל סלפי טונגצאי שער דוד" → {"action": "create_invoice", "product": "מקל סלפי", "contact": "טונגצאי", "account": "שער דוד", "price": 0, "quantity": 5}
 - "3 בלוטוס קשת 120 סאק דורון" → {"action": "create_invoice", "product": "בלוטוס קשת", "contact": "סאק", "account": "דורון", "price": 120, "quantity": 3}
 - "בלוטוס קשת 120 סאק דורון" → {"action": "create_invoice", "product": "בלוטוס קשת", "contact": "סאק", "account": "דורון", "price": 120, "quantity": 1}
@@ -4146,28 +4149,26 @@ def handle_command(message, from_number):
         if matched_product:
             pname = matched_product.get("Product_Name", "")
             print(f"Product fallback: found '{pname}' in message, forcing create_invoice")
-            # הסר את שם המוצר מההודעה כדי לחלץ שם לקוח/בעל בית
+            # הסר את שם המוצר מההודעה
             remaining_words = message.strip()
             for pw in pname.split():
                 remaining_words = re.sub(re.escape(pw), '', remaining_words, flags=re.IGNORECASE).strip()
             remaining_words = remaining_words.strip()
-            # הסר מספרים בתחילה (כמות) ובסוף (מחיר)
+            # חלץ את כל המספרים מהמשפט (בכל מיקום)
+            # מספר >= 50 = מחיר, מספר < 50 = כמות
             qty = 1
             price = 0
-            qty_match = re.match(r'^(\d+)\s+', remaining_words)
-            if qty_match:
-                qty_val = int(qty_match.group(1))
-                if 2 <= qty_val <= 30:
-                    qty = qty_val
-                    remaining_words = remaining_words[qty_match.end():].strip()
-            price_match = re.search(r'\s+(\d{2,5})$', remaining_words)
-            if price_match:
-                price_val = int(price_match.group(1))
-                if price_val >= 10:
-                    price = price_val
-                    remaining_words = remaining_words[:price_match.start()].strip()
-            # remaining_words עכשיו = "[לקוח] [בעל בית]" - שלח ל-Gemini לחלץ
-            # או פשוט שים הכל ב-account ונסה
+            all_numbers = re.findall(r'\b(\d+)\b', remaining_words)
+            for num_str in all_numbers:
+                num_val = int(num_str)
+                if num_val >= 50:
+                    price = num_val
+                elif 2 <= num_val <= 49:
+                    qty = num_val
+            # הסר את כל המספרים מהמחרוזת כדי לקבל שמות בלבד
+            remaining_words = re.sub(r'\b\d+\b', '', remaining_words).strip()
+            remaining_words = re.sub(r'\s+', ' ', remaining_words).strip()
+            # remaining_words = שם לקוח + בעל בית
             words_left = remaining_words.split()
             contact_guess = words_left[0] if words_left else ""
             account_guess = " ".join(words_left[1:]) if len(words_left) > 1 else (words_left[0] if words_left else "")
