@@ -1273,12 +1273,11 @@ MAIN_MENU_TEXT = ("""
 7. כל הדוחות
 8. חובות פתוחים
 🔀 *כלים*
+9. פרופילים
 10. מיזוג לקוחות
 11. חסר פספורט
-📎 12. פספורטים ←
-📷 13. פרופילים ←
+12. פספורטים
 ────────────────────────────
-9️⃣ *9* = תפריט ראשי תמיד
 💡 לפרטים נוספים כתוב *עזרה*
 """)
 
@@ -1804,8 +1803,8 @@ def handle_command(message, from_number):
         cancel_flags[from_number] = True
         return "✅ בוטל!"
 
-    # === 9 = חזרה לתפריט ראשי (תמיד!) ===
-    if msg_nav == "9":
+    # === 9 = חזרה לתפריט ראשי בפעולה פעילה ===
+    if pending and msg_nav == "9":
         sessions.pop(from_number, None)
         return MAIN_MENU_TEXT.strip()
 
@@ -2420,10 +2419,10 @@ def handle_command(message, from_number):
         "6":  "דוח יומי",
         "7":  "כל הדוחות",
         "8":  "חובות פתוחים",
+        "9":  "פרופילים",
         "10": "מיזוג לקוחות",
         "11": "חסר פספורט",
         "12": "פספורטים",
-        "13": "פרופילים",
     }
     if not pending and message.strip() in MENU_SHORTCUTS:
         sessions.pop(from_number, None)
