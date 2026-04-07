@@ -3777,6 +3777,12 @@ def handle_command(message, from_number):
             return _format_contact_choice_menu(contacts, "סטטוס")
 
     # === דוח בית ===
+    # תמוך גם ב-"דוח [שם]" בלי בית
+    if msg_s.startswith("דוח ") and not msg_s.startswith("דוח בית ") and not msg_s.startswith("דוח יומי") and not msg_s.startswith("דוח יומי"):
+        name_q_short = msg_s[4:].strip()
+        if name_q_short and len(name_q_short) >= 2:
+            # הפנה לטיפול בדוח בית
+            return handle_command(f"דוח בית {name_q_short}", from_number)
     if msg_s.startswith("סטטוס בית ") or msg_s.startswith("דוח בית "):
         name_q = msg_s.split(" ", 2)[2].strip() if len(msg_s.split(" ", 2)) > 2 else ""
         if name_q:
