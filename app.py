@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import threading
@@ -4120,6 +4121,63 @@ def handle_command(message, from_number):
     
     if not intent:
         intent = parse_intent(message)
+    
+    # === Fallback: אם Gemini החזיר unknown אבל ההודעה מכילה מוצר מהקאש - כפה create_invoice ===
+    if intent.get("action") == "unknown":
+        # בדוק אם ההודעה מכילה מוצר מוכר מהקאש
+        all_prods = get_cached_products()
+        msg_lower_check = message.strip().lower()
+        # רשימת מילות עצירה שלא יכולות להיות מוצרים
+        stop_words = {"שילם", "שולם", "שלם", "תשלום", "מזומן", "העברה", "אשראי", "צ'ק",
+                      "הוסף", "לקוח", "חדש", "פתח", "צור", "קווים", "פעילים", "חשבונית",
+                      "כן", "לא", "ביטול", "תפריט"}
+        matched_product = None
+        for p in all_prods:
+            pname = p.get("Product_Name", "").strip()
+            if not pname or len(pname) < 3:
+                continue
+            pname_lower = pname.lower()
+            # בדוק שכל מילות המוצר מופיעות בהודעה
+            pwords = pname_lower.split()
+            if all(pw in msg_lower_check for pw in pwords):
+                # וודא שאף מילה מהמוצר לא היא מילת עצירה
+                if not any(pw in stop_words for pw in pwords):
+                    matched_product = p
+                    break
+        if matched_product:
+            pname = matched_product.get("Product_Name", "")
+            print(f"Product fallback: found '{pname}' in message, forcing create_invoice")
+            # הסר את שם המוצר מההודעה כדי לחלץ שם לקוח/בעל בית
+            remaining_words = message.strip()
+            for pw in pname.split():
+                remaining_words = re.sub(re.escape(pw), '', remaining_words, flags=re.IGNORECASE).strip()
+            remaining_words = remaining_words.strip()
+            # הסר מספרים בתחילה (כמות) ובסוף (מחיר)
+            qty = 1
+            price = 0
+            qty_match = re.match(r'^(\d+)\s+', remaining_words)
+            if qty_match:
+                qty_val = int(qty_match.group(1))
+                if 2 <= qty_val <= 30:
+                    qty = qty_val
+                    remaining_words = remaining_words[qty_match.end():].strip()
+            price_match = re.search(r'\s+(\d{2,5})$', remaining_words)
+            if price_match:
+                price_val = int(price_match.group(1))
+                if price_val >= 10:
+                    price = price_val
+                    remaining_words = remaining_words[:price_match.start()].strip()
+            # remaining_words עכשיו = "[לקוח] [בעל בית]" - שלח ל-Gemini לחלץ
+            # או פשוט שים הכל ב-account ונסה
+            words_left = remaining_words.split()
+            contact_guess = words_left[0] if words_left else ""
+            account_guess = " ".join(words_left[1:]) if len(words_left) > 1 else (words_left[0] if words_left else "")
+            if len(words_left) == 1:
+                contact_guess = ""
+                account_guess = words_left[0]
+            intent = {"action": "create_invoice", "product": pname, "contact": contact_guess, "account": account_guess, "price": price, "quantity": qty}
+            print(f"Product fallback intent: {intent}")
+    
     action = intent.get("action")
     print(f"action={action}, intent={intent}")
 
@@ -4320,10 +4378,13 @@ def handle_command(message, from_number):
         lines = [f"• {i.get('Subject', '')} - ₪{i.get('Grand_Total', 0)}" for i in open_inv]
         return f"📋 {len(open_inv)} חשבוניות פתוחות:\n" + "\n".join(lines)
 
-    return ("❓ לא הבנתי. לדוגמה:\n"
-            "• '050 לטייה של איציק' - חשבונית חדשה\n"
-            "• 'טונגצאי בוי שער דוד שילם 120 מזומן' - תשלום\n"
-            "• 'קווים פעילים אילן' - בדיקת קווים")
+    return ("❓ פקודה לא מוכרת.\n"
+            "לדוגמה:\n"
+            "• *050 לטייה של איציק* - חשבונית חדשה\n"
+            "• *טונגצאי בוי שער דוד שילם 120 מזומן* - תשלום\n"
+            "• *קווים פעילים אילן* - בדיקת קווים\n"
+            "\n"
+            "שלח *9* לתפריט הראשי")
 
 def bulk_passport_update_for_account(account: dict, from_number: str) -> str:
     """
