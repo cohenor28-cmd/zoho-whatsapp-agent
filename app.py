@@ -798,6 +798,25 @@ def handle_payment(contact_name, account_name, amount, method, from_number):
         return f"מצאתי כמה לקוחות:\n{names}\n\nכתוב חלק מהשם או מספר לבחירה:\n0 לביטול | 9 לתפריט ראשי"
     return _process_payment_for_contact(contacts[0], amount, method, from_number)
 
+def _detect_payment_method(text):
+    """זיהוי שיטת תשלום מטקסט חלקי. ברירת מחדל: מזומן"""
+    t = text.lower().strip()
+    if any(x in t for x in ["העבר", "ציאפ", "זיאפ", "העברה"]):
+        return "העברה ציאפ"
+    if any(x in t for x in ["אשראי", "קרדיט", "כרטיס"]):
+        return "אשראי"
+    if any(x in t for x in ["המחאה", "צ'ק", "צק", "שק"]):
+        return "המחאה"
+    if any(x in t for x in ["גיהוץ", "גיהוז"]):
+        return "גיהוץ"
+    if any(x in t for x in ["gmt"]):
+        return "gmt"
+    if any(x in t for x in ["מקס"]):
+        return "מקס"
+    if any(x in t for x in ["דני"]):
+        return "דני"
+    return "מזומן"
+
 def _process_payment_for_contact(contact, amount, method, from_number):
     open_invoices = find_open_invoices_for_contact(contact["Full_Name"])
     if not open_invoices:
@@ -1703,13 +1722,13 @@ def build_landlord_report(name_query: str, account=None) -> tuple:
         line_nums = line_numbers_map.get(cname, "")
         cid = contact_ids.get(cname, "")
         ordered_contacts.append((cname, cid))
-        lines.append(f"{idx}. 👤 *{cname}* | 📞 {active} קווים | ₪{data['debt']}")
+        lines.append(f"{idx}. 👤 *{cname}* | {active} קווים | ₪{data['debt']}")
         if line_nums:
-            lines.append(f"   📞 {line_nums}")
+            lines.append(f"   {line_nums}")
         for i in data["invs"]:
             lines.append(f"   ₪{i['total']} | {i['date']}")
             for p in i.get("products", []):
-                lines.append(f"   📦 {p}")
+                lines.append(f"   {p}")
         lines.append("")
     if rest_contacts:
         lines.append(f"10. 📝 עוד {len(rest_contacts)} לקוחות (כל הרשימה)")
@@ -2150,6 +2169,34 @@ def handle_command(message, from_number):
         active_lines_map = session.get("active_lines", {})
         aname_session = session.get("aname", "")
         choice = message.strip()
+        # זיהוי תשלום מבפנים: "תשלום 100 שם" או "100 שם"
+        import re as _re
+        _pay_match = _re.match(r'^(?:תשלום\s+)?(\d+(?:[.,]\d+)?)\s+(.+)$', choice)
+        if _pay_match:
+            _pay_amount_str, _pay_rest = _pay_match.group(1), _pay_match.group(2).strip()
+            # בדוק אם השאר מכיל שם לקוח מהרשימה
+            all_c_inline = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
+            _matched_contact = None
+            _pay_method_inline = "מזומן"
+            _name_part = _pay_rest
+            # חפש שיטת תשלום בסוף הטקסט
+            for _m_kw in ["העבר", "ציאפ", "אשראי", "המחאה", "גיהוץ", "gmt", "מקס", "דני"]:
+                if _m_kw in _pay_rest.lower():
+                    _pay_method_inline = _detect_payment_method(_pay_rest)
+                    # הסר מילת התשלום מהשם
+                    for _rm in ["העברה ציאפ", "ציאפ", "העברה", "אשראי", "המחאה", "גיהוץ", "gmt", "מקס", "דני"]:
+                        _name_part = _re.sub(_rm, '', _name_part, flags=_re.IGNORECASE).strip()
+                    break
+            for _cn, _cid in all_c_inline:
+                if _name_part.strip() and any(w in _cn for w in _name_part.split()):
+                    _matched_contact = (_cn, _cid)
+                    break
+            if _matched_contact:
+                _cname_pay, _cid_pay = _matched_contact
+                _pay_amount = float(_pay_amount_str.replace(',', '.'))
+                sessions.pop(from_number, None)
+                _contact_obj = {"id": _cid_pay, "Full_Name": _cname_pay, "Account_Name": {"name": aname_session}}
+                return _process_payment_for_contact(_contact_obj, _pay_amount, _pay_method_inline, from_number)
         # ספרה 10 = הצג את כל הרשימה
         if choice == "10" and rest_contacts:
             all_contacts = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
@@ -2158,7 +2205,7 @@ def handle_command(message, from_number):
             for idx2, (cn, _) in enumerate(all_contacts, 1):
                 data = by_contact_map.get(cn, {"debt": 0})
                 active = active_lines_map.get(cn, 0)
-                lines.append(f"{idx2}. 👤 *{cn}* | 📞 {active} קווים | ₪{data.get('debt',0)}")
+                lines.append(f"{idx2}. 👤 *{cn}* | {active} קווים | ₪{data.get('debt',0)}")
             lines.append("")
             lines.append("💡 שלח מספר לסטטוס מלא")
             lines.append("0 לביטול | 9 לתפריט ראשי")
@@ -2242,11 +2289,9 @@ def handle_command(message, from_number):
             amount_lp = float(msg_parts[0].replace(',', ''))
         except:
             return "❓ כתוב סכום בלבד (לדוגמא: 100)"
-        method_lp = "מזומן"
-        if len(msg_parts) > 1:
-            m = msg_parts[1]
-            if "העבר" in m or "ציאפ" in m:
-                method_lp = "העברה ציאפ"
+        # זיהוי שיטת תשלום מהשאר של ההודעה (אחרי הסכום)
+        rest_text = " ".join(msg_parts[1:]) if len(msg_parts) > 1 else ""
+        method_lp = _detect_payment_method(rest_text) if rest_text else "מזומן"
         sessions.pop(from_number, None)
         contact_obj_lp = {"id": cid_lp, "Full_Name": cname_lp,
                           "Account_Name": {"name": aname_lp}}
