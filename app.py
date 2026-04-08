@@ -489,20 +489,15 @@ def find_open_invoices_for_contact(contact_name):
 def mark_invoice_paid(invoice_id, amount, method):
     method_label = method if method else "מזומן"
     # Map method label to Zoho picklist actual_value
+    # סוגי תשלום רלוונטיים: מזומן, gmt, 019, ציאפ
     method_map = {
         "מזומן": "Option 1",
-        "העברה ציאפ": "העברה - ציאפ בנקוק",
-        "ציאפ": "העברה - ציאפ בנקוק",
-        "העברה": "העברה בנקאית",
-        "העברה בנקאית": "העברה בנקאית",
-        "אשראי": "Option 2",
-        "כרטיס אשראי": "Option 2",
-        "המחאה": "המחאה (צ'ק)",
-        "צ'ק": "המחאה (צ'ק)",
-        "גיהוץ": "גיהוץ 019",
         "gmt": "Gmt",
-        "מקס": "מקס - אשראי צליה",
-        "דני": "העברה - דני בנקוק",
+        "019": "גיהוץ 019",
+        "גיהוץ": "גיהוץ 019",
+        "ציאפ": "העברה - ציאפ בנקוק",
+        "העברה ציאפ": "העברה - ציאפ בנקוק",
+        "העברה": "העברה - ציאפ בנקוק",
     }
     payment_kind_value = method_map.get(method_label, method_map.get(method_label.split()[0] if method_label else "מזומן", "Option 1"))
     now_str = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
@@ -799,22 +794,16 @@ def handle_payment(contact_name, account_name, amount, method, from_number):
     return _process_payment_for_contact(contacts[0], amount, method, from_number)
 
 def _detect_payment_method(text):
-    """זיהוי שיטת תשלום מטקסט חלקי. ברירת מחדל: מזומן"""
+    """זיהוי שיטת תשלום מטקסט חלקי. ברירת מחדל: מזומן
+    סוגים רלוונטיים: מזומן, gmt, 019, ציאפ
+    """
     t = text.lower().strip()
-    if any(x in t for x in ["העבר", "ציאפ", "זיאפ", "העברה"]):
-        return "העברה ציאפ"
-    if any(x in t for x in ["אשראי", "קרדיט", "כרטיס"]):
-        return "אשראי"
-    if any(x in t for x in ["המחאה", "צ'ק", "צק", "שק"]):
-        return "המחאה"
-    if any(x in t for x in ["גיהוץ", "גיהוז"]):
-        return "גיהוץ"
+    if any(x in t for x in ["ציאפ", "זיאפ", "העבר"]):
+        return "ציאפ"
     if any(x in t for x in ["gmt"]):
         return "gmt"
-    if any(x in t for x in ["מקס"]):
-        return "מקס"
-    if any(x in t for x in ["דני"]):
-        return "דני"
+    if any(x in t for x in ["019", "גיהוץ", "גיהוז"]):
+        return "019"
     return "מזומן"
 
 def _process_payment_for_contact(contact, amount, method, from_number):
