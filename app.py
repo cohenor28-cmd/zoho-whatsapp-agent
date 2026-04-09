@@ -821,7 +821,7 @@ def _detect_payment_method(text):
         return "019"
     return "מזומן"
 
-def _process_payment_for_contact(contact, amount, method, from_number):
+def _process_payment_for_contact(contact, amount, method, from_number, aname_session="", account_id_session=""):
     open_invoices = find_open_invoices_for_contact(contact["Full_Name"])
     if not open_invoices:
         return f"❌ לא מצאתי חשבוניות פתוחות עבור {contact['Full_Name']}"
@@ -845,7 +845,8 @@ def _process_payment_for_contact(contact, amount, method, from_number):
     sessions[from_number] = {
         "pending": "payment_invoice_choice",
         "options": open_invoices,
-        "context": {"contact": contact, "amount": amount, "method": method}
+        "context": {"contact": contact, "amount": amount, "method": method,
+                    "aname_session": aname_session, "account_id_session": account_id_session}
     }
     status_labels = {"לא שולם": "לא שולם", "שולם חלקית": "חלקי", "Unpaid": "לא שולם", "Sent": "נשלח", "Draft": "טיוטה"}
     lines = "\n".join([f"{i+1}. {inv.get('Subject','')} - ₪{inv.get('Grand_Total',0)} [{status_labels.get(inv.get('Status',''), inv.get('Status',''))}]"
@@ -2177,6 +2178,8 @@ def handle_command(message, from_number):
         options = session.get("options", [])
         context = session.get("context", {})
         contact = context.get("contact", {})
+        aname_pic = context.get("aname_session", "")
+        account_id_pic = context.get("account_id_session", "")
         chosen = pick_best_match(options, message)
         if not chosen:
             lines = "\n".join([f"{i+1}. {inv.get('Subject','')}" for i, inv in enumerate(options)])
@@ -2188,11 +2191,40 @@ def handle_command(message, from_number):
         if success:
             acc_name = contact.get("Account_Name", {}).get("name", "") if isinstance(contact.get("Account_Name"), dict) else ""
             log_action("תשלום", f"תשלום: {contact.get('Full_Name','')} @ {acc_name} ₪{pay_amount} {pay_method}")
-            return (f"✅ תשלום עודכן!\n"
+            _confirm_msg = (f"✅ תשלום עודכן!\n"
                     f"👤 {contact.get('Full_Name','')}\n"
                     f"🏠 {acc_name}\n"
                     f"💰 ₪{pay_amount} | {pay_method}\n"
                     f"📄 {chosen.get('Subject', '')}")
+            # אם יש סשן בית - שלח אישור ובנה דוח מעודכן
+            if aname_pic:
+                twilio_client.messages.create(
+                    from_=TWILIO_WHATSAPP_FROM,
+                    to=f"whatsapp:{from_number.replace('whatsapp:', '')}",
+                    body=_confirm_msg)
+                try:
+                    import time as _time_pic; _time_pic.sleep(2)
+                    _acct_pic = {"id": account_id_pic, "Account_Name": aname_pic} if account_id_pic else None
+                    _result_pic = build_landlord_report(aname_pic, account=_acct_pic)
+                    _rep_pic = _result_pic[0]
+                    _ord_pic = _result_pic[1] if len(_result_pic) > 1 else []
+                    _rst_pic = _result_pic[2] if len(_result_pic) > 2 else []
+                    _cids_pic = _result_pic[3] if len(_result_pic) > 3 else {}
+                    _byc_pic = _result_pic[4] if len(_result_pic) > 4 else {}
+                    _aln_pic = _result_pic[5] if len(_result_pic) > 5 else {}
+                    if _ord_pic:
+                        sessions[from_number] = {"pending": "choose_landlord_contact",
+                            "contacts": _ord_pic, "rest": _rst_pic,
+                            "contact_ids": _cids_pic, "by_contact": _byc_pic,
+                            "active_lines": _aln_pic, "aname": aname_pic,
+                            "account_id": account_id_pic}
+                    else:
+                        sessions.pop(from_number, None)
+                    return _rep_pic
+                except Exception as _e_pic:
+                    print(f"Error rebuilding report after invoice choice: {_e_pic}")
+                    return ""
+            return _confirm_msg
         return "❌ שגיאה בעדכון התשלום"
     # === בחירת לקוח מסטטוס בית (לחיצה על ספרה) ===
     if pending == "choose_landlord_contact":
@@ -2296,7 +2328,10 @@ def handle_command(message, from_number):
                 _cname_pay, _cid_pay = _matched_contact
                 _pay_amount = float(_pay_amount_str.replace(',', '.'))
                 _contact_obj = {"id": _cid_pay, "Full_Name": _cname_pay, "Account_Name": {"name": aname_session}}
-                _pay_result = _process_payment_for_contact(_contact_obj, _pay_amount, _pay_method_inline, from_number)
+                _pay_result = _process_payment_for_contact(_contact_obj, _pay_amount, _pay_method_inline, from_number, aname_session=aname_session, account_id_session=account_id_session)
+                # אם נוצר סשן payment_invoice_choice - יש כמה חשבוניות, החזר שאלה מיד
+                if sessions.get(from_number, {}).get("pending") == "payment_invoice_choice":
+                    return _pay_result
                 # שלח אישור תשלום מיד
                 twilio_client.messages.create(
                     from_=TWILIO_WHATSAPP_FROM,
