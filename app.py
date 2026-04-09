@@ -2160,9 +2160,19 @@ def handle_command(message, from_number):
         choice = message.strip()
         # זיהוי תשלום מבפנים: "תשלום 100 שם" או "100 שם"
         import re as _re
-        _pay_match = _re.match(r'^(?:תשלום\s+)?(\d+(?:[.,]\d+)?)\s+(.+)$', choice)
-        if _pay_match:
-            _pay_amount_str, _pay_rest = _pay_match.group(1), _pay_match.group(2).strip()
+        # תמוך בשלושה תבניות: "תשלום 100 שם", "100 שם", "תשלום שם 100"
+        _pay_match = None
+        _pay_amount_str = None
+        _pay_rest = None
+        # תבנית 1: תשלום/סכום לפני השם
+        _m1 = _re.match(r'^(?:תשלום\s+)?(\d+(?:[.,]\d+)?)\s+(.+)$', choice)
+        # תבנית 2: תשלום שם סכום (שם לפני המספר)
+        _m2 = _re.match(r'^תשלום\s+(.+?)\s+(\d+(?:[.,]\d+)?)(?:\s+.*)?$', choice)
+        if _m1:
+            _pay_amount_str, _pay_rest = _m1.group(1), _m1.group(2).strip()
+        elif _m2:
+            _pay_rest, _pay_amount_str = _m2.group(1).strip(), _m2.group(2)
+        if _pay_amount_str is not None:
             # בדוק אם השאר מכיל שם לקוח מהרשימה
             all_c_inline = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
             _matched_contact = None
