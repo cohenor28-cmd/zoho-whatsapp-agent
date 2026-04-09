@@ -2335,15 +2335,14 @@ def handle_command(message, from_number):
                     sessions[from_number] = {"pending": "customer_status_nav", "aname": aname, "cid": cid_s, "cname": cname}
                 return status_text
         # זיהוי פקודת חשבונית חדשה מתוך דוח בית
-        # אם ההודעה נראית כמו פקודת חשבונית (מכילה שם מוצר) - עבד אותה
+        # רק אם ההודעה מכילה מילת מוצר ספציפית - לא כל הודעה עם 2 מילים!
         _invoice_keywords = ["050", "סוויט", "תכלת", "בלוטוס", "מקל סלפי", "אוזניות", "רמקול",
                              "סוללה", "מטען", "שעון", "פלאפון", "מכשיר", "טאבלט", "מזגן",
                              "ראוטר", "כבל", "מגן", "מעמד", "מקלדת", "עכבר", "תיק", "פנס",
                              "מאוורר", "מקרן", "מקרר", "נרתיק", "גיטרה", "חשבונית"]
         _choice_lower = choice.lower()
         _is_invoice_cmd = any(kw in _choice_lower for kw in _invoice_keywords)
-        # גם אם ה-Gemini יזהה כ-create_invoice
-        if _is_invoice_cmd or (len(choice.split()) >= 2 and not choice.isdigit()):
+        if _is_invoice_cmd:
             # שמור את הסשן הנוכחי כדי לחזור אחרי החשבונית
             _saved_session = sessions.get(from_number, {}).copy()
             result = handle_command(choice, from_number)
@@ -5825,6 +5824,45 @@ def create_invoice_and_pay_api():
 @app.route("/health")
 def health():
     return "✅ Zoho WhatsApp Agent is running! (optimized)", 200
+
+@app.route("/api/contacts")
+def api_contacts():
+    """
+    API endpoint לביקורית - מחזיר רשימת לקוחות עם קווים פעילים
+    פרמטרים: ?account=שם_בעל_בית (אופציונלי)
+    """
+    from flask import request as _req
+    account_filter = _req.args.get("account", "").strip()
+    try:
+        # שלוף כל הלקוחות
+        params = {
+            "fields": "Full_Name,Account_Name,field11,field12,Phone,Email",
+            "per_page": 200
+        }
+        if account_filter:
+            contacts_raw = zoho_get("Contacts/search", {"criteria": f"(Account_Name:equals:{account_filter})",
+                                                         "fields": "Full_Name,Account_Name,field11,field12,Phone,Email",
+                                                         "per_page": 200})
+        else:
+            contacts_raw = zoho_get("Contacts", params)
+        result = []
+        for c in contacts_raw:
+            acc = c.get("Account_Name", {})
+            acc_name = acc.get("name", "") if isinstance(acc, dict) else str(acc or "")
+            result.append({
+                "id": c.get("id", ""),
+                "name": c.get("Full_Name", ""),
+                "account": acc_name,
+                "active_lines": c.get("field11", 0) or 0,
+                "line_numbers": c.get("field12", "") or "",
+                "phone": c.get("Phone", "") or "",
+                "email": c.get("Email", "") or ""
+            })
+        # מיין לפי קווים פעילים (גדול לקטן)
+        result.sort(key=lambda x: -x["active_lines"])
+        return jsonify({"success": True, "count": len(result), "contacts": result})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/")
 def index():
