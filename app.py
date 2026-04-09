@@ -3975,7 +3975,8 @@ def handle_command(message, from_number):
     # === מחק חשבונית - אישור מחיקה ===
     if pending == "confirm_delete_invoice":
         invoices_to_delete = session.get("invoices_to_delete", [])
-        if message.strip() in ["כן", "yes", "1"]:
+        _msg_del = message.strip()
+        if _msg_del in ["כן", "yes"]:
             sessions.pop(from_number, None)
             deleted = []
             for inv in invoices_to_delete:
@@ -3984,13 +3985,13 @@ def handle_command(message, from_number):
                 log_action("מחיקה", f"נמחקה חשבונית: {subject}")
                 deleted.append(subject)
             return f"✅ {len(deleted)} חשבונית/ות נמחקו בהצלחה!\n" + "\n".join([f"📄 {s}" for s in deleted])
-
-        elif message.strip() in ["לא", "no", "2"]:
+        elif _msg_del in ["לא", "no", "0"]:
             sessions.pop(from_number, None)
             return "❌ המחיקה בוטלה"
         else:
-            return "❓ כתוב *כן* למחיקה או *לא* לביטול"
-
+            # אם זו פקודה חדשה (לא כן/לא) - נקה סשן ועבד אותה
+            sessions.pop(from_number, None)
+            return handle_command(message, from_number)
     # === זיהוי פקודה חדשה כשיש session פתוח ===
     if pending and _looks_like_new_command(message):
         # שמור את הפקודה החדשה ושאל אם לעבור
