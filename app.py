@@ -2280,7 +2280,23 @@ def handle_command(message, from_number):
                         _multi_results.append(_res)
                         break
             if _multi_results:
-                # שלח אישורי תשלום
+                # בדוק אם אחד מהתשלומים יצר payment_invoice_choice (כמה חשבוניות)
+                _has_invoice_choice = sessions.get(from_number, {}).get("pending") == "payment_invoice_choice"
+                if _has_invoice_choice:
+                    # שלח את אישורי התשלומים שכבר נעשו, ואז שאל על החשבונית
+                    _done_results = [r for r in _multi_results if "✅" in r]
+                    _question_results = [r for r in _multi_results if "איזו לסמן" in r]
+                    if _done_results:
+                        twilio_client.messages.create(
+                            from_=TWILIO_WHATSAPP_FROM,
+                            to=f"whatsapp:{from_number.replace('whatsapp:', '')}",
+                            body="\n\n".join(_done_results))
+                    # עדכן context עם aname לדוח מאוחר יותר
+                    if sessions.get(from_number, {}).get("pending") == "payment_invoice_choice":
+                        sessions[from_number]["context"]["aname_session"] = aname_session
+                        sessions[from_number]["context"]["account_id_session"] = account_id_session
+                    return "\n\n".join(_question_results) if _question_results else _multi_results[-1]
+                # אין שאלת חשבונית - שלח אישורים ובנה דוח
                 _combined = "\n\n".join(_multi_results)
                 twilio_client.messages.create(
                     from_=TWILIO_WHATSAPP_FROM,
