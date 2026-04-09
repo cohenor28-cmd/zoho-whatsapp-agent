@@ -1,5 +1,4 @@
 import os
-import re
 import json
 import time
 import threading
@@ -44,7 +43,37 @@ _product_cache = {
 
 # ─── Session memory (per phone number) ────────────────────────────────────────
 sessions = {}
-cancel_flags = {}  # from_number -> True אם המשתמש ביקש ביטול
+
+# ─── Resume State - שמירת מצב פרופיל כללי לשחזור אחרי רסטרט ──────────────────
+RESUME_STATE_FILE = "/tmp/bot_logs/profile_resume_state.json"
+_resume_lock = threading.Lock()
+
+def _save_resume_state(state: dict):
+    """שומר מצב ריצה ל-/tmp כדי שיוכל להמשיך אחרי רסטרט"""
+    try:
+        os.makedirs(os.path.dirname(RESUME_STATE_FILE), exist_ok=True)
+        with open(RESUME_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[Resume] Failed to save state: {e}")
+
+def _load_resume_state() -> dict:
+    """טוען מצב ריצה קודם אם קיים"""
+    try:
+        if os.path.exists(RESUME_STATE_FILE):
+            with open(RESUME_STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def _clear_resume_state():
+    """מוחק את קובץ המצב אחרי סיום מוצלח"""
+    try:
+        if os.path.exists(RESUME_STATE_FILE):
+            os.remove(RESUME_STATE_FILE)
+    except Exception:
+        pass
 
 # ──# ─── יומן פעולות יומי (קובץ קבוע) ──────────────────────────────────
 LOG_DIR = "/tmp/bot_logs"
@@ -410,38 +439,26 @@ def show_account_choice(accounts, search_name, from_number, original_action, ext
     }
     lines = [f"{i+1}. {a.get('Account_Name', '')}" for i, a in enumerate(options[:10])]
     extra = f"\n... ועוד {len(options) - 10}" if len(options) > 10 else ""
-    return f"🏠 מצאתי {len(options)} בעלי ביתים עבור '{search_name}':\n" + "\n".join(lines) + extra + "\n\nכתוב מספר לבחירה:\n0 לביטול | 9 לתפריט ראשי"
+    return f"🏠 מצאתי {len(options)} בעלי בתים עבור '{search_name}':\n" + "\n".join(lines) + extra + "\n\nכתוב מספר לבחירה:"
+
 def find_product(product_name):
     """שיפור: חיפוש מוצר מהקאש בזיכרון במקום API call כל פעם"""
     if not product_name:
         print("find_product: empty product name")
         return []
+
     print(f"find_product: searching for '{product_name}'")
     product_lower = product_name.strip().lower()
     search_words = product_lower.split()
-    # הפרד מילות טקסט ממספרים
-    text_words = [w for w in search_words if not w.isdigit()]
-    num_words = [w for w in search_words if w.isdigit()]
+
     # שיפור: חיפוש מהקאש בזיכרון (מיידי!)
     all_products = get_cached_products()
     if all_products:
-        # סינון - כל המילים חייבות להופיע (כולל מספרים)
+        # סינון - כל המילים חייבות להופיע
         filtered = [p for p in all_products if all(w in p.get("Product_Name", "").lower() for w in search_words)]
         if filtered:
-            # אם יש יותר מ-3 תוצאות ויש מספרים בשאילתה - נסה ללא מספרים
-            if len(filtered) > 3 and num_words and text_words:
-                filtered_text = [p for p in all_products if all(w in p.get("Product_Name", "").lower() for w in text_words)]
-                if 0 < len(filtered_text) <= len(filtered):
-                    print(f"find_product: using text-only search, {len(filtered_text)} results (was {len(filtered)})")
-                    return filtered_text
             print(f"find_product: cache hit! {len(filtered)} results for '{product_name}'")
             return filtered
-        # אם לא נמצא עם כל המילים - נסה ללא מספרים (המספר הוא כנראה כמות)
-        if num_words and text_words:
-            filtered_text = [p for p in all_products if all(w in p.get("Product_Name", "").lower() for w in text_words)]
-            if filtered_text:
-                print(f"find_product: text-only hit! {len(filtered_text)} results for '{' '.join(text_words)}'")
-                return filtered_text
         # סינון חלקי - לפחות מילה אחת
         partial = [p for p in all_products if any(w in p.get("Product_Name", "").lower() for w in search_words)]
         if partial:
@@ -484,26 +501,25 @@ def find_product(product_name):
 def find_open_invoices_for_contact(contact_name):
     invoices = zoho_get("Invoices/search", {"word": contact_name,
                                              "fields": "Subject,Status,Grand_Total,Contact_Name,Account_Name"})
-    # קבל סטטוס בעברית או אנגלית (הזוהו מחזיר Unpaid/Sent/Draft)
-    OPEN_STATUSES = {"לא שולם", "unpaid", "sent", "overdue", "draft", ""}
-    result = [i for i in invoices if (i.get("Status") or "").lower() in OPEN_STATUSES or i.get("Status") is None]
-    print(f"[INVOICES] found {len(invoices)} total, {len(result)} open for {contact_name}")
-    for inv in invoices:
-        print(f"  status={inv.get('Status')} subject={inv.get('Subject','')[:40]}")
-    return result
+    return [i for i in invoices if i.get("Status") in ["לא שולם", None, ""]]
 
 def mark_invoice_paid(invoice_id, amount, method):
     method_label = method if method else "מזומן"
     # Map method label to Zoho picklist actual_value
-    # סוגי תשלום רלוונטיים: מזומן, gmt, 019, ציאפ
     method_map = {
         "מזומן": "Option 1",
-        "gmt": "Gmt",
-        "019": "גיהוץ 019",
-        "גיהוץ": "גיהוץ 019",
-        "ציאפ": "העברה - ציאפ בנקוק",
         "העברה ציאפ": "העברה - ציאפ בנקוק",
-        "העברה": "העברה - ציאפ בנקוק",
+        "ציאפ": "העברה - ציאפ בנקוק",
+        "העברה": "העברה בנקאית",
+        "העברה בנקאית": "העברה בנקאית",
+        "אשראי": "Option 2",
+        "כרטיס אשראי": "Option 2",
+        "המחאה": "המחאה (צ'ק)",
+        "צ'ק": "המחאה (צ'ק)",
+        "גיהוץ": "גיהוץ 019",
+        "gmt": "Gmt",
+        "מקס": "מקס - אשראי צליה",
+        "דני": "העברה - דני בנקוק",
     }
     payment_kind_value = method_map.get(method_label, method_map.get(method_label.split()[0] if method_label else "מזומן", "Option 1"))
     now_str = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
@@ -691,14 +707,11 @@ SYSTEM_PROMPT = """
 - quantity = כמות יחידות. מספר שמופיע לפני שם המוצר (בין 2 ל-30) = כמות. אם לא ציין כמות - שים 1. המספר חייב להיות בין 1 ל-30.
 - אמצעי תשלום: "מזומן", "העברה", "צ'ק", "אשראי" - ברירת מחדל "מזומן"
 - חשוב: מספרים כמו 050, 48, 155 שהם חלק משם המוצר - אל תשים ב-price ולא ב-quantity! רק מספרים שמייצגים סכום כסף או כמות
-- הבחנה בין quantity ל-price: מספר >= 50 = price (מחיר). מספר 2-49 = quantity (כמות). אין חשיבות למיקום המספר במשפט!
+- הבחנה בין quantity ל-price: מספר לפני שם המוצר (2-30) = quantity. מספר אחרי שם המוצר = price.
 
 דוגמאות ליצירת חשבונית:
 - "050 סוויט אילן" → {"action": "create_invoice", "product": "050 סוויט", "contact": "", "account": "אילן", "price": 0, "quantity": 1}
 - "3 בלוטוס קשת סאק דורון" → {"action": "create_invoice", "product": "בלוטוס קשת", "contact": "סאק", "account": "דורון", "price": 0, "quantity": 3}
-- "160 תכלת סומניק אילן" → {"action": "create_invoice", "product": "תכלת", "contact": "סומניק", "account": "אילן", "price": 160, "quantity": 1}
-- "תכלת 3 סומניק אילן" → {"action": "create_invoice", "product": "תכלת", "contact": "סומניק", "account": "אילן", "price": 0, "quantity": 3}
-- "160 תכלת 3 סומניק אילן" → {"action": "create_invoice", "product": "תכלת", "contact": "סומניק", "account": "אילן", "price": 160, "quantity": 3}
 - "5 מקל סלפי טונגצאי שער דוד" → {"action": "create_invoice", "product": "מקל סלפי", "contact": "טונגצאי", "account": "שער דוד", "price": 0, "quantity": 5}
 - "3 בלוטוס קשת 120 סאק דורון" → {"action": "create_invoice", "product": "בלוטוס קשת", "contact": "סאק", "account": "דורון", "price": 120, "quantity": 3}
 - "בלוטוס קשת 120 סאק דורון" → {"action": "create_invoice", "product": "בלוטוס קשת", "contact": "סאק", "account": "דורון", "price": 120, "quantity": 1}
@@ -796,21 +809,8 @@ def handle_payment(contact_name, account_name, amount, method, from_number):
             "context": {"amount": amount, "method": method}
         }
         names = "\n".join([f"{i+1}. {c['Full_Name']}" for i, c in enumerate(contacts)])
-        return f"מצאתי כמה לקוחות:\n{names}\n\nכתוב חלק מהשם או מספר לבחירה:\n0 לביטול | 9 לתפריט ראשי"
+        return f"מצאתי כמה לקוחות:\n{names}\n\nכתוב חלק מהשם או מספר לבחירה:"
     return _process_payment_for_contact(contacts[0], amount, method, from_number)
-
-def _detect_payment_method(text):
-    """זיהוי שיטת תשלום מטקסט חלקי. ברירת מחדל: מזומן
-    סוגים רלוונטיים: מזומן, gmt, 019, ציאפ
-    """
-    t = text.lower().strip()
-    if any(x in t for x in ["ציאפ", "זיאפ", "העבר"]):
-        return "ציאפ"
-    if any(x in t for x in ["gmt"]):
-        return "gmt"
-    if any(x in t for x in ["019", "גיהוץ", "גיהוז"]):
-        return "019"
-    return "מזומן"
 
 def _process_payment_for_contact(contact, amount, method, from_number):
     open_invoices = find_open_invoices_for_contact(contact["Full_Name"])
@@ -829,7 +829,6 @@ def _process_payment_for_contact(contact, amount, method, from_number):
                     f"💰 ₪{pay_amount} | {pay_method}\n"
                     f"📄 {inv.get('Subject', '')}")
         return "❌ שגיאה בעדכון התשלום"
-    acc_name_pay = contact.get("Account_Name", {}).get("name", "") if isinstance(contact.get("Account_Name"), dict) else str(contact.get("Account_Name", ""))
     sessions[from_number] = {
         "pending": "payment_invoice_choice",
         "options": open_invoices,
@@ -837,9 +836,7 @@ def _process_payment_for_contact(contact, amount, method, from_number):
     }
     lines = "\n".join([f"{i+1}. {inv.get('Subject','')} - ₪{inv.get('Grand_Total',0)}"
                        for i, inv in enumerate(open_invoices)])
-    return (f"👤 *{contact['Full_Name']}* | 🏠 {acc_name_pay}\n"
-            f"מצאתי {len(open_invoices)} חשבוניות פתוחות:\n{lines}\n\n"
-            f"איזו לסמן כשולם?\n0 לביטול | 9 לתפריט ראשי")
+    return f"מצאתי {len(open_invoices)} חשבוניות פתוחות:\n{lines}\n\nאיזו לסמן כשולם?"
 
 # ─── Main handler ──────────────────────────────────────────────────────────────
 def _looks_like_new_command(message):
@@ -1089,31 +1086,17 @@ def _fetch_deposits_today() -> list:
         kind = (rec.get("payment_kind") or "לא ידוע").strip()
         contact_obj = rec.get("Contact", {})
         cname = contact_obj.get("name", "") if isinstance(contact_obj, dict) else str(contact_obj)
-        cid = contact_obj.get("id", "") if isinstance(contact_obj, dict) else ""
-        # שלוף בעל בית מהלקוח (לא מהחשבונית) כדי שישאר נכון גם אחרי שחשבונית עברה לבעל בית חשבוניות סגורות
+        # שלוף חשבונית לקבלת בעל בית
         aname = ""
-        if cid:
+        inv_obj = rec.get("Invoice", {})
+        if isinstance(inv_obj, dict) and inv_obj.get("id"):
             try:
-                contact_data = zoho_get(f"Contacts/{cid}", {"fields": "Full_Name,Account_Name"})
-                if contact_data:
-                    acc = contact_data[0].get("Account_Name", {})
+                inv_data = zoho_get(f"Invoices/{inv_obj['id']}")
+                if inv_data:
+                    acc = inv_data[0].get("Account_Name", {})
                     aname = acc.get("name", "") if isinstance(acc, dict) else str(acc)
             except:
                 pass
-        # fallback: אם לא נמצא בעל בית מהלקוח, נסה מהחשבונית
-        if not aname:
-            inv_obj = rec.get("Invoice", {})
-            if isinstance(inv_obj, dict) and inv_obj.get("id"):
-                try:
-                    inv_data = zoho_get(f"Invoices/{inv_obj['id']}")
-                    if inv_data:
-                        acc = inv_data[0].get("Account_Name", {})
-                        fallback_aname = acc.get("name", "") if isinstance(acc, dict) else str(acc)
-                        # אל תשתמש בבעל בית חשבוניות סגורות כפולבק
-                        if 'חשבוניות סגורות' not in fallback_aname:
-                            aname = fallback_aname
-                except:
-                    pass
         enriched.append({"kind": kind, "amount": amt, "contact": cname, "landlord": aname})
     return enriched
 
@@ -1178,46 +1161,25 @@ def build_deposits_report_with_cache(records: list) -> str:
     return "\n".join(lines)
 
 def build_deposits_by_contact(records: list) -> str:
-    """פירוט הפקדות לפי לקוח - ממוין לפי סהכ בעל בית ואחרכך לפי סהכ לקוח"""
+    """פירוט הפקדות לפי לקוח"""
     SEP = "──────────────"
     today_str = datetime.now().strftime("%d/%m/%Y")
     by_contact = {}
     for rec in records:
         c = rec["contact"] or "לא ידוע"
-        landlord = rec.get("landlord") or "לא ידוע"
-        by_contact.setdefault(c, {"total": 0, "kinds": {}, "landlord": landlord})
+        by_contact.setdefault(c, {"total": 0, "kinds": {}})
         by_contact[c]["total"] += rec["amount"]
         k = rec["kind"]
         by_contact[c]["kinds"].setdefault(k, 0)
         by_contact[c]["kinds"][k] += rec["amount"]
-    # חשב סהכ לפי בעל בית
-    landlord_totals = {}
-    for cname, data in by_contact.items():
-        a = data["landlord"]
-        landlord_totals[a] = landlord_totals.get(a, 0) + data["total"]
-    # מיין: קודם לפי סהכ בעל בית (גדול לקטן), אחרכך לפי סהכ לקוח (גדול לקטן)
-    sorted_contacts = sorted(
-        by_contact.items(),
-        key=lambda x: (-landlord_totals.get(x[1]["landlord"], 0), -x[1]["total"])
-    )
     lines = [f"💳 *הפקדות לפי לקוח - {today_str}*", SEP]
     grand = 0
-    prev_landlord = None
-    for cname, data in sorted_contacts:
+    for cname, data in sorted(by_contact.items()):
         grand += data["total"]
-        landlord = data["landlord"]
-        # הדפס כותרת בעל בית כשמשתנה
-        if landlord != prev_landlord:
-            if prev_landlord is not None:
-                lines.append("")
-            lines.append(f"🏠 *{landlord}* - סהכ ₪{landlord_totals.get(landlord, 0)}")
-            lines.append("─" * 14)
-            prev_landlord = landlord
-        lines.append(f"  👤 *{cname}* - ₪{data['total']}")
-        if len(data["kinds"]) > 1:
-            for kind, amt in sorted(data["kinds"].items()):
-                lines.append(f"     • {kind}: ₪{amt}")
-    lines.append("")
+        lines.append(f"👤 *{cname}* - ₪{data['total']}")
+        for kind, amt in sorted(data["kinds"].items()):
+            lines.append(f"   • {kind}: ₪{amt}")
+        lines.append("")
     lines.append(SEP)
     lines.append(f"📊 סהכ: *₪{grand}*")
     lines.append("")
@@ -1238,7 +1200,7 @@ def build_deposits_by_landlord(records: list) -> str:
         by_landlord[a]["kinds"][k] += rec["amount"]
     lines = [f"🏠 *הפקדות לפי בעל בית - {today_str}*", SEP]
     grand = 0
-    for aname, data in sorted(by_landlord.items(), key=lambda x: -x[1]["total"]):
+    for aname, data in sorted(by_landlord.items()):
         grand += data["total"]
         lines.append(f"🏠 *{aname}* - ₪{data['total']}")
         for kind, amt in sorted(data["kinds"].items()):
@@ -1262,17 +1224,19 @@ HELP_TEXT = ("""
   • חשבונית [לקוח] [בעל בית] [מוצר] → יצירת חשבונית
   • מחק חשבונית אחרונה → מחיקת חשבונית אחרונה
   • מחק חשבונית אחרונה כפול / משולש → מחיקת 2/3 חשבוניות
+  • חפש [שם] → חיפוש חשבוניות לפי שם
 💰 *תשלומים*
   • תשלום [לקוח] [סכום] [שיטה] → עדכון תשלום
 👤 *לקוחות*
-  • סטטוס [שם] → סטטוס מלא של לקוח (פרטים + חובות + מוצרים)
-  • דוח בית [שם] → כל הלקוחות וחובות של בעל בית
-📎 *פספורטים* (שלח *פספורטים* לתפריט)
+  • סטטוס [שם] → סטטוס מלא של לקוח
+  • דוח לקוח [שם] → כל חשבוניות ותשלומים של לקוח
+  • דוח בית [שם] → כל הלקוחות וחשבוניות של בעל בית
+📎 *פספורטים*
   • עדכון פספורט [שם] → חילוץ שם ויזה מפספורט קיים
   • פספורט בית [בעל בית] → עדכון פספורטים לכל לקוחות בבית
   • פספורט כללי → עדכון פספורטים לבעלי בתים לפי בחירה
   • תמונה + "פספורט [שם]" → העלאה + עדכון שם ויזה אוטומטי
-📷 *פרופילים* (שלח *פרופילים* לתפריט)
+📷 *פרופילים*
   • תמונה + "פרופיל [שם]" → העלאה + מיקוד פנים + עדכון בזוהו
   • פרופיל בית [בעל בית] → עדכון פרופיל לכל לקוחות בבית
   • פרופיל כללי → עדכון פרופיל לבעלי בתים לפי בחירה
@@ -1288,22 +1252,29 @@ HELP_TEXT = ("""
 MAIN_MENU_TEXT = ("""
 📋 *תפריט ראשי*
 ────────────────────────────
-🧧 *חשבוניות ותשלומים*
+🧧 *חשבוניות*
 1. חשבונית [לקוח] [בעל בית] [מוצר]
 2. מחק חשבונית אחרונה
-3. תשלום [לקוח] [סכום] [שיטה]
+3. חפש [שם]
+💰 *תשלומים*
+4. תשלום [לקוח] [סכום] [שיטה]
 👤 *לקוחות*
-4. סטטוס [שם]
-5. דוח בית [שם]
-📃 *דוחות*
-6. דוח יומי
-7. כל הדוחות
-8. חובות פתוחים
-🔀 *כלים*
-9. פרופילים
-10. מיזוג לקוחות
-11. חסר פספורט
-12. פספורטים
+5. סטטוס [שם]
+6. דוח לקוח [שם]
+7. דוח בית [שם]
+📎 *פספורטים*
+8. עדכון פספורט [שם]
+9. פספורט בית [בעל בית]
+10. פספורט כללי
+📷 *פרופילים*
+11. פרופיל בית [בעל בית]
+12. פרופיל כללי
+13. תיקון פרופיל [שם]
+14. בדוק פרופיל בית [בעל בית]
+📊 *דוחות*
+15. דוח יומי
+16. כל הדוחות
+17. חובות פתוחים
 ────────────────────────────
 💡 לפרטים נוספים כתוב *עזרה*
 """)
@@ -1447,8 +1418,6 @@ def _format_contact_choice_menu(contacts, action_label: str) -> str:
         account = c.get("Account_Name", {})
         aname = account.get("name", "") if isinstance(account, dict) else str(account)
         lines.append(f"{i}. {cname} (🏠 {aname})")
-    lines.append("─" * 28)
-    lines.append("0 לביטול | 9 לתפריט ראשי")
     return "\n".join(lines)
 
 def _format_account_choice_menu(accounts, action_label: str) -> str:
@@ -1458,8 +1427,6 @@ def _format_account_choice_menu(accounts, action_label: str) -> str:
     for i, a in enumerate(accounts, 1):
         aname = a.get("Account_Name", "")
         lines.append(f"{i}. {aname}")
-    lines.append("─" * 28)
-    lines.append("0 לביטול | 9 לתפריט ראשי")
     return "\n".join(lines)
 
 def build_open_debts_report() -> str:
@@ -1569,16 +1536,6 @@ def build_customer_status(name_query: str, contact=None) -> str:
         for inv in unpaid:
             created = inv.get("Created_Time", "")[:10]
             lines.append(f"   • ₪{inv.get('Grand_Total',0)} | {created}")
-            # הצג מוצרים של החשבונית
-            items = inv.get("Invoiced_Items") or []
-            if isinstance(items, list):
-                for item in items:
-                    if isinstance(item, dict):
-                        prod = item.get("product") or item.get("Product_Name") or {}
-                        pname = prod.get("name", "") if isinstance(prod, dict) else str(prod)
-                        if pname:
-                            qty = item.get("quantity", 1) or 1
-                            lines.append(f"     └ {pname}" + (f" x{int(qty)}" if qty and int(qty) > 1 else ""))
     else:
         lines.append("✅ אין חובות פתוחים")
     if product_counts:
@@ -1586,22 +1543,15 @@ def build_customer_status(name_query: str, contact=None) -> str:
         lines.append("📦 *מוצרים שנקנו:*")
         for pname, qty in sorted(product_counts.items(), key=lambda x: -x[1]):
             lines.append(f"   • {pname} x{qty}")
-    if aname:
-        lines.append(SEP)
-        lines.append(f"🏠 לדוח בית *{aname}* - כתוב *8*")
-    if unpaid:
-        lines.append(f"💳 לתשלום חשבונית - כתוב *7*")
-    lines.append("0 לביטול | 9 לתפריט ראשי")
-    return "\n".join(lines), aname, cid
+    return "\n".join(lines)
 
-def build_landlord_report(name_query: str, account=None) -> tuple:
-    """דוח בעל בית - רק חשבונות פתוחות לפי לקוח + קווים פעילים.
-    Returns (report_text, ordered_contact_ids) for interactive selection."""
+def build_landlord_report(name_query: str, account=None) -> str:
+    """דוח בעל בית - רק חשבונות פתוחות לפי לקוח + קווים פעילים"""
     SEP = "──────────────"
     if account is None:
         accounts = _word_search_accounts(name_query)
         if not accounts:
-            return f"❓ לא מצאתי בעל בית בשם *{name_query}*", []
+            return f"❓ לא מצאתי בעל בית בשם *{name_query}*"
         account = accounts[0]
     aname = account.get("Account_Name", name_query)
     aid = account["id"]
@@ -1610,7 +1560,7 @@ def build_landlord_report(name_query: str, account=None) -> tuple:
         inv_unpaid = zoho_get("Invoices/search", {
             "criteria": f"(Account_Name:equals:{aid})and(Status:equals:לא שולם)",
             "fields": "Subject,Grand_Total,Status,Contact_Name,Created_Time",
-            "per_page": 100
+            "sort_by": "Contact_Name", "sort_order": "asc", "per_page": 100
         })
     except:
         inv_unpaid = []
@@ -1618,7 +1568,7 @@ def build_landlord_report(name_query: str, account=None) -> tuple:
         inv_partial = zoho_get("Invoices/search", {
             "criteria": f"(Account_Name:equals:{aid})and(Status:equals:שולם חלקית)",
             "fields": "Subject,Grand_Total,Status,Contact_Name,Created_Time",
-            "per_page": 100
+            "sort_by": "Contact_Name", "sort_order": "asc", "per_page": 100
         })
     except:
         inv_partial = []
@@ -1641,7 +1591,6 @@ def build_landlord_report(name_query: str, account=None) -> tuple:
         by_contact[cname]["invs"].append({"total": total, "date": created, "em": em})
     # שלוף קווים פעילים לכל לקוח (שדה field11)
     active_lines_map = {}
-    line_numbers_map = {}
     try:
         token, domain = get_access_token()
         import requests as _req
@@ -1649,89 +1598,30 @@ def build_landlord_report(name_query: str, account=None) -> tuple:
             if cid:
                 r = _req.get(f"{domain}/crm/v5/Contacts/{cid}",
                              headers={"Authorization": f"Zoho-oauthtoken {token}"},
-                             params={"fields": "field11,field12"})
+                             params={"fields": "field11"})
                 if r.status_code == 200:
-                    d = r.json()["data"][0]
-                    active_lines_map[cname] = d.get("field11", 0) or 0
-                    line_numbers_map[cname] = d.get("field12", "") or ""
+                    active_lines_map[cname] = r.json()["data"][0].get("field11", 0) or 0
     except:
         pass
     grand_debt = sum(v["debt"] for v in by_contact.values())
-    total_active_lines = sum(active_lines_map.values())
     lines = [
         f"🏠 *{aname}*",
         SEP,
-        f"חובות פתוחים: *₪{grand_debt}* | {len(invoices)} חשבונות | {len(by_contact)} לקוחות",
-        f"📞 קווים פעילים: *{total_active_lines}*",
+        f"🚨 חובות פתוחים: *₪{grand_debt}* | {len(invoices)} חשבונות | {len(by_contact)} לקוחות",
         SEP,
     ]
-    ordered_contacts = []  # list of (cname, cid) in display order
     if not by_contact:
         lines.append("✅ אין חובות פתוחים")
-        return "\n".join(lines), []
-    # מיין לפי קווים פעילים (גדול לקטן) ואחרכך שם
-    sorted_contacts = sorted(
-        by_contact.keys(),
-        key=lambda c: (-active_lines_map.get(c, 0), c)
-    )
-    TOP_N = 8
-    top_contacts = sorted_contacts[:TOP_N]
-    rest_contacts = sorted_contacts[TOP_N:]
-    # שלוף מוצרים לחשבוניות הפתוחות
-    inv_items_map = {}  # invoice_id -> list of product strings
-    try:
-        token2, domain2 = get_access_token()
-        import requests as _req2
-        for inv in invoices:
-            inv_id = inv.get("id", "")
-            if inv_id:
-                r_inv = _req2.get(f"{domain2}/crm/v5/Invoices/{inv_id}",
-                                  headers={"Authorization": f"Zoho-oauthtoken {token2}"},
-                                  params={"fields": "Invoiced_Items"})
-                if r_inv.status_code == 200:
-                    items = r_inv.json()["data"][0].get("Invoiced_Items") or []
-                    prods = []
-                    for item in items:
-                        if isinstance(item, dict):
-                            prod = item.get("product") or item.get("Product_Name") or {}
-                            pname = prod.get("name", "") if isinstance(prod, dict) else str(prod)
-                            qty = item.get("quantity", 1) or 1
-                            if pname:
-                                prods.append(pname + (f" x{int(qty)}" if qty and int(qty) > 1 else ""))
-                    inv_items_map[inv_id] = prods
-    except:
-        pass
-    # צירוף מוצרים ל-invs
-    for inv in invoices:
-        inv_id = inv.get("id", "")
-        contact_obj = inv.get("Contact_Name", {})
-        cname_inv = contact_obj.get("name", "") if isinstance(contact_obj, dict) else str(contact_obj)
-        if cname_inv in by_contact:
-            for inv_entry in by_contact[cname_inv]["invs"]:
-                if not inv_entry.get("products") and inv_entry.get("date") == inv.get("Created_Time", "")[:10]:
-                    inv_entry["products"] = inv_items_map.get(inv_id, [])
-                    break
-    for idx, cname in enumerate(top_contacts, 1):
+        return "\n".join(lines)
+    # מיין לפי שם לקוח (אלפבית)
+    for cname in sorted(by_contact.keys()):
         data = by_contact[cname]
         active = active_lines_map.get(cname, 0)
-        line_nums = line_numbers_map.get(cname, "")
-        cid = contact_ids.get(cname, "")
-        ordered_contacts.append((cname, cid))
-        lines.append(f"{idx}. 👤 *{cname}* | {active} קווים | ₪{data['debt']}")
-        if line_nums:
-            lines.append(f"   {line_nums}")
+        lines.append(f"👤 *{cname}* | 📞 {active} קווים | 🚨 ₪{data['debt']}")
         for i in data["invs"]:
-            lines.append(f"   ₪{i['total']} | {i['date']}")
-            for p in i.get("products", []):
-                lines.append(f"   {p}")
+            lines.append(f"   {i['em']} ₪{i['total']} | {i['date']}")
         lines.append("")
-    if rest_contacts:
-        lines.append(f"10. 📝 עוד {len(rest_contacts)} לקוחות (כל הרשימה)")
-        lines.append("")
-    lines.append(SEP)
-    lines.append("💡 שלח מספר לסטטוס מלא של אותו לקוח | 8 לתשלום ללקוח")
-    lines.append("0 לביטול | 9 לתפריט ראשי")
-    return "\n".join(lines), ordered_contacts, rest_contacts, contact_ids, by_contact, active_lines_map, line_numbers_map
+    return "\n".join(lines)
 
 def update_passport_for_contact(contact: dict) -> str:
     """
@@ -1822,26 +1712,6 @@ def handle_command(message, from_number):
     print(f"handle_command: '{message}' from {from_number}")
     session = sessions.get(from_number, {})
     pending = session.get("pending")
-    msg_nav = message.strip()
-
-    # === 0 = ביטול מכל מצב ===
-    if pending and msg_nav == "0":
-        sessions.pop(from_number, None)
-        cancel_flags[from_number] = True
-        return "✅ בוטל!"
-
-    # === 9 = חזרה לתפריט ראשי בפעולה פעילה (לא כשבוחרים מרשימה) ===
-    _selection_states = {"product_choice", "contact_choice", "account_choice",
-                         "choose_landlord_contact", "choose_contact_for_status",
-                         "choose_account_for_status", "choose_contact_for_report",
-                         "choose_account_for_report", "choose_contact_for_payment",
-                         "choose_account_for_payment"}
-    if pending and msg_nav == "9" and pending not in _selection_states:
-        sessions.pop(from_number, None)
-        return MAIN_MENU_TEXT.strip()
-    # === 9 = תפריט ראשי גם כשאין פעולה פעילה (לא דרך MENU_SHORTCUTS) ===
-    if not pending and msg_nav == "9":
-        return MAIN_MENU_TEXT.strip()
 
     # === בחירת לקוח לעדכון פספורט ===
     if pending == "choose_contact_passport":
@@ -1889,14 +1759,17 @@ def handle_command(message, from_number):
         if choice in ["1", "כן"]:
             sessions.pop(from_number, None)
             def _run_bulk_profile():
-                result, used_att_ids = bulk_profile_update_for_account(account, from_number)
-                # שמור את ה-attachment IDs ששימשו כדי שהתיקון ידלג עליהם
-                sessions[from_number] = {
-                    "pending": "after_bulk_profile",
-                    "account": account,
-                    "used_att_ids": used_att_ids
-                }
-                _send_reply(result, from_number)
+                try:
+                    result, used_att_ids = bulk_profile_update_for_account(account, from_number)
+                    # שמור את ה-attachment IDs ששימשו כדי שהתיקון ידלג עליהם
+                    sessions[from_number] = {
+                        "pending": "after_bulk_profile",
+                        "account": account,
+                        "used_att_ids": used_att_ids
+                    }
+                    _send_reply(result, from_number)
+                except Exception as e:
+                    _send_reply(f"❌ שגיאה בעדכון פרופילים: {str(e)[:100]}", from_number)
             threading.Thread(target=_run_bulk_profile, daemon=True).start()
             aname = account.get("Account_Name", "")
             return f"⏳ מתחיל עדכון פרופילים - *{aname}*... תקבל עדכון בסיום."
@@ -2129,11 +2002,7 @@ def handle_command(message, from_number):
             idx = int(choice) - 1
             if 0 <= idx < len(contacts):
                 sessions.pop(from_number, None)
-                status_text, aname, cid = build_customer_status(name_q, contact=contacts[idx])
-                cname_s = contacts[idx].get("Full_Name", name_q)
-                if aname:
-                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname, "cid": cid, "cname": cname_s}
-                return status_text
+                return build_customer_status(name_q, contact=contacts[idx])
         return f"❓ כתוב מספר בין 1 ל-{len(contacts)}"
 
     # === בחירת בעל בית מתוצאות חיפוש ===
@@ -2145,250 +2014,8 @@ def handle_command(message, from_number):
             idx = int(choice) - 1
             if 0 <= idx < len(accounts):
                 sessions.pop(from_number, None)
-                result = build_landlord_report(name_q, account=accounts[idx])
-                report, ordered_contacts = result[0], result[1]
-                rest_contacts = result[2] if len(result) > 2 else []
-                contact_ids_map = result[3] if len(result) > 3 else {}
-                by_contact_map = result[4] if len(result) > 4 else {}
-                active_lines_map = result[5] if len(result) > 5 else {}
-                if ordered_contacts:
-                    sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts,
-                        "rest": rest_contacts, "contact_ids": contact_ids_map,
-                        "by_contact": by_contact_map, "active_lines": active_lines_map, "aname": name_q}
-                return report
+                return build_landlord_report(name_q, account=accounts[idx])
         return f"❓ כתוב מספר בין 1 ל-{len(accounts)}"
-
-    # === בחירת לקוח מסטטוס בית (לחיצה על ספרה) ===
-    if pending == "choose_landlord_contact":
-        contacts = session.get("contacts", [])  # list of (cname, cid) - top 8
-        rest_contacts = session.get("rest", [])  # remaining contacts
-        contact_ids_map = session.get("contact_ids", {})
-        by_contact_map = session.get("by_contact", {})
-        active_lines_map = session.get("active_lines", {})
-        aname_session = session.get("aname", "")
-        choice = message.strip()
-        # זיהוי תשלום מבפנים: "תשלום 100 שם" או "100 שם"
-        import re as _re
-        # תמוך בשלושה תבניות: "תשלום 100 שם", "100 שם", "תשלום שם 100"
-        _pay_match = None
-        _pay_amount_str = None
-        _pay_rest = None
-        # תבנית 1: תשלום/סכום לפני השם: "100 שם" או "תשלום 100 שם"
-        _m1 = _re.match(r'^(?:תשלום\s+)?(\d+(?:[.,]\d+)?)\s+(.+)$', choice)
-        # תבנית 2: תשלום שם סכום: "תשלום שם 100"
-        _m2 = _re.match(r'^תשלום\s+(.+?)\s+(\d+(?:[.,]\d+)?)(?:\s+.*)?$', choice)
-        # תבנית 3: שם סכום (ללא תשלום): "שם 100" - רק אם השם מכיל אותיות עבריות
-        _m3 = _re.match(r'^([\u05d0-\u05ea][\u05d0-\u05ea\s]+?)\s+(\d+(?:[.,]\d+)?)(?:\s+.*)?$', choice)
-        if _m1:
-            _pay_amount_str, _pay_rest = _m1.group(1), _m1.group(2).strip()
-        elif _m2:
-            _pay_rest, _pay_amount_str = _m2.group(1).strip(), _m2.group(2)
-        elif _m3:
-            _pay_rest, _pay_amount_str = _m3.group(1).strip(), _m3.group(2)
-        # בדוק תשלום מרובה - מספר זוגות שם+סכום בהודעה אחת
-        _multi_pairs = _re.findall(r'(\d+(?:[.,]\d+)?)\s+([\u05d0-\u05ea][\u05d0-\u05ea\s]+?)(?=\s+\d|$)', choice)
-        _multi_pairs2 = _re.findall(r'([\u05d0-\u05ea][\u05d0-\u05ea\s]+?)\s+(\d+(?:[.,]\d+)?)(?=\s+[\u05d0-\u05ea]|$)', choice)
-        _all_multi = [(name.strip(), amt) for amt, name in _multi_pairs] + [(name.strip(), amt) for name, amt in _multi_pairs2]
-        # סנן כפילויות
-        _seen_names = set()
-        _unique_multi = []
-        for _mn, _ma in _all_multi:
-            if _mn not in _seen_names:
-                _seen_names.add(_mn)
-                _unique_multi.append((_mn, _ma))
-        
-        if len(_unique_multi) > 1:
-            # תשלום מרובה
-            all_c_inline = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
-            _pay_method_multi = _detect_payment_method(choice)
-            _multi_results = []
-            for _mn, _ma in _unique_multi:
-                for _cn, _cid in all_c_inline:
-                    if _mn.strip() and any(w in _cn for w in _mn.split()):
-                        _amt = float(_ma.replace(',', '.'))
-                        _cobj = {"id": _cid, "Full_Name": _cn, "Account_Name": {"name": aname_session}}
-                        _res = _process_payment_for_contact(_cobj, _amt, _pay_method_multi, from_number)
-                        _multi_results.append(_res)
-                        break
-            if _multi_results:
-                def _send_updated_report_multi():
-                    import time as _time
-                    _time.sleep(1.5)
-                    try:
-                        _result = build_landlord_report(aname_session)
-                        _rep = _result[0]
-                        _ordered = _result[1] if len(_result) > 1 else []
-                        _rest_c = _result[2] if len(_result) > 2 else []
-                        _cids = _result[3] if len(_result) > 3 else {}
-                        _byc = _result[4] if len(_result) > 4 else {}
-                        _alines = _result[5] if len(_result) > 5 else {}
-                        if _ordered:
-                            sessions[from_number] = {"pending": "choose_landlord_contact",
-                                "contacts": _ordered, "rest": _rest_c,
-                                "contact_ids": _cids, "by_contact": _byc,
-                                "active_lines": _alines, "aname": aname_session}
-                        else:
-                            sessions.pop(from_number, None)
-                        twilio_client.messages.create(
-                            from_=TWILIO_WHATSAPP_FROM,
-                            to=f"whatsapp:{from_number.replace('whatsapp:', '')}",
-                            body=_rep)
-                    except Exception as _e:
-                        print(f"Error sending updated report: {_e}")
-                import threading as _threading
-                _threading.Thread(target=_send_updated_report_multi, daemon=True).start()
-                return "\n".join(_multi_results)
-
-        if _pay_amount_str is not None:
-            # בדוק אם השאר מכיל שם לקוח מהרשימה
-            all_c_inline = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
-            _matched_contact = None
-            _pay_method_inline = "מזומן"
-            _name_part = _pay_rest
-            # חפש שיטת תשלום בסוף הטקסט
-            for _m_kw in ["העבר", "ציאפ", "אשראי", "המחאה", "גיהוץ", "gmt", "019"]:
-                if _m_kw in _pay_rest.lower():
-                    _pay_method_inline = _detect_payment_method(_pay_rest)
-                    # הסר מילת התשלום מהשם
-                    for _rm in ["העברה ציאפ", "ציאפ", "העברה", "אשראי", "המחאה", "גיהוץ", "gmt", "019"]:
-                        _name_part = _re.sub(_rm, '', _name_part, flags=_re.IGNORECASE).strip()
-                    break
-            for _cn, _cid in all_c_inline:
-                if _name_part.strip() and any(w in _cn for w in _name_part.split()):
-                    _matched_contact = (_cn, _cid)
-                    break
-            if _matched_contact:
-                _cname_pay, _cid_pay = _matched_contact
-                _pay_amount = float(_pay_amount_str.replace(',', '.'))
-                _contact_obj = {"id": _cid_pay, "Full_Name": _cname_pay, "Account_Name": {"name": aname_session}}
-                _pay_result = _process_payment_for_contact(_contact_obj, _pay_amount, _pay_method_inline, from_number)
-                # אחרי תשלום - שלח אישור ואחרכך דוח מעודכן
-                def _send_updated_report():
-                    import time as _time
-                    _time.sleep(1.5)
-                    try:
-                        _result = build_landlord_report(aname_session)
-                        _rep = _result[0]
-                        _ordered = _result[1] if len(_result) > 1 else []
-                        _rest_c = _result[2] if len(_result) > 2 else []
-                        _cids = _result[3] if len(_result) > 3 else {}
-                        _byc = _result[4] if len(_result) > 4 else {}
-                        _alines = _result[5] if len(_result) > 5 else {}
-                        if _ordered:
-                            sessions[from_number] = {"pending": "choose_landlord_contact",
-                                "contacts": _ordered, "rest": _rest_c,
-                                "contact_ids": _cids, "by_contact": _byc,
-                                "active_lines": _alines, "aname": aname_session}
-                        else:
-                            sessions.pop(from_number, None)
-                        twilio_client.messages.create(
-                            from_=TWILIO_WHATSAPP_FROM,
-                            to=f"whatsapp:{from_number.replace('whatsapp:', '')}",
-                            body=_rep)
-                    except Exception as _e:
-                        print(f"Error sending updated report: {_e}")
-                import threading as _threading
-                _threading.Thread(target=_send_updated_report, daemon=True).start()
-                return _pay_result
-        # ספרה 10 = הצג את כל הרשימה
-        if choice == "10" and rest_contacts:
-            all_contacts = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
-            SEP = "──────────────"
-            lines = [f"🏠 *{aname_session}* - כל הלקוחות", SEP]
-            for idx2, (cn, _) in enumerate(all_contacts, 1):
-                data = by_contact_map.get(cn, {"debt": 0})
-                active = active_lines_map.get(cn, 0)
-                lines.append(f"{idx2}. 👤 *{cn}* | {active} קווים | ₪{data.get('debt',0)}")
-            lines.append("")
-            lines.append("💡 שלח מספר לסטטוס מלא")
-            lines.append("0 לביטול | 9 לתפריט ראשי")
-            sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": all_contacts,
-                "rest": [], "contact_ids": contact_ids_map, "by_contact": by_contact_map,
-                "active_lines": active_lines_map, "aname": aname_session}
-            return "\n".join(lines)
-        # 8 = תשלום ללקוח מהרשימה
-        if choice == "8":
-            all_c = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
-            SEP = "──────────────"
-            lines_pay = [f"🏠 *{aname_session}* - בחר לקוח לתשלום:", SEP]
-            for idx2, (cn, _) in enumerate(all_c, 1):
-                data = by_contact_map.get(cn, {"debt": 0})
-                lines_pay.append(f"{idx2}. 👤 *{cn}* | 🚨 ₪{data.get('debt',0)}")
-            lines_pay.append("")
-            lines_pay.append("0 לביטול | 9 לתפריט ראשי")
-            sessions[from_number] = {"pending": "landlord_payment_contact_choice",
-                "contacts": all_c, "aname": aname_session}
-            return "\n".join(lines_pay)
-        if choice.isdigit():
-            idx = int(choice) - 1
-            if 0 <= idx < len(contacts):
-                cname, cid = contacts[idx]
-                sessions.pop(from_number, None)
-                # בנה contact dict מינימלי ל-build_customer_status
-                contact_obj = {"id": cid, "Full_Name": cname}
-                status_text, aname, cid_s = build_customer_status(cname, contact=contact_obj)
-                if aname:
-                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname, "cid": cid_s, "cname": cname}
-                return status_text
-        return f"❓ כתוב מספר בין 1 ל-{len(contacts)} או 10 לכל הרשימה"
-
-    # === ניווט אחרי סטטוס לקוח: 7 לתשלום, 8 לסטטוס בית ===
-    if pending == "customer_status_nav":
-        aname = session.get("aname", "")
-        cid_nav = session.get("cid", "")
-        cname_nav = session.get("cname", "")
-        if message.strip() == "7":
-            # תשלום דרך סטטוס לקוח - עבור ל-payment flow
-            sessions.pop(from_number, None)
-            return handle_command(f"תשלום {cname_nav}", from_number)
-        if message.strip() == "8" and aname:
-            sessions.pop(from_number, None)
-            result = build_landlord_report(aname)
-            report, ordered_contacts = result[0], result[1]
-            rest_contacts = result[2] if len(result) > 2 else []
-            contact_ids_map = result[3] if len(result) > 3 else {}
-            by_contact_map = result[4] if len(result) > 4 else {}
-            active_lines_map = result[5] if len(result) > 5 else {}
-            if ordered_contacts:
-                sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts,
-                    "rest": rest_contacts, "contact_ids": contact_ids_map,
-                    "by_contact": by_contact_map, "active_lines": active_lines_map, "aname": aname}
-            return report
-        sessions.pop(from_number, None)
-        return None  # ימשיך לטיפול רגיל
-
-    # === תשלום ללקוח דרך סטטוס בית: בחירת לקוח ===
-    if pending == "landlord_payment_contact_choice":
-        contacts_lp = session.get("contacts", [])  # list of (cname, cid)
-        aname_lp = session.get("aname", "")
-        choice = message.strip()
-        if choice.isdigit():
-            idx = int(choice) - 1
-            if 0 <= idx < len(contacts_lp):
-                cname, cid = contacts_lp[idx]
-                sessions[from_number] = {"pending": "landlord_payment_amount",
-                    "contact_name": cname, "contact_id": cid, "aname": aname_lp}
-                return f"👤 *{cname}*\nכמה שילם? (רק סכום, לדוגמא: 100)\n0 לביטול | 9 לתפריט ראשי"
-        return f"❓ כתוב מספר בין 1 ל-{len(contacts_lp)}"
-
-    # === תשלום ללקוח דרך סטטוס בית: סכום + שיטה ===
-    if pending == "landlord_payment_amount":
-        cname_lp = session.get("contact_name", "")
-        cid_lp = session.get("contact_id", "")
-        aname_lp = session.get("aname", "")
-        msg_parts = message.strip().split()
-        # צורת: "100" או "100 מזומן" או "100 העברה"
-        try:
-            amount_lp = float(msg_parts[0].replace(',', ''))
-        except:
-            return "❓ כתוב סכום בלבד (לדוגמא: 100)"
-        # זיהוי שיטת תשלום מהשאר של ההודעה (אחרי הסכום)
-        rest_text = " ".join(msg_parts[1:]) if len(msg_parts) > 1 else ""
-        method_lp = _detect_payment_method(rest_text) if rest_text else "מזומן"
-        sessions.pop(from_number, None)
-        contact_obj_lp = {"id": cid_lp, "Full_Name": cname_lp,
-                          "Account_Name": {"name": aname_lp}}
-        return _process_payment_for_contact(contact_obj_lp, amount_lp, method_lp, from_number)
 
     # === בחירת בעל בית לעדכון פספורטות במאסס ===
     if pending == "choose_account_bulk_passport":
@@ -2552,8 +2179,7 @@ def handle_command(message, from_number):
     # === ביטול פעולה ===
     if message.strip() in ["ביטול", "ביטול", "cancel"]:
         sessions.pop(from_number, None)
-        cancel_flags[from_number] = True
-        return "✅ בוטל! פעולה פעילה תעצור בקרוב."
+        return "✅ בוטל! אפשר לשלוח פקודה חדשה."
 
     # === עזרה ===
     if message.strip() in ["עזרה", "עזר", "help"]:
@@ -2564,25 +2190,6 @@ def handle_command(message, from_number):
     if message.strip() in ["תפריט", "תפריט ראשי", "menu"]:
         sessions.pop(from_number, None)
         return MAIN_MENU_TEXT.strip()
-
-    # === קיצורי מספרים לתפריט (רק כשאין פעולה פעילה) ===
-    MENU_SHORTCUTS = {
-        "1":  "חשבונית",
-        "2":  "מחק חשבונית אחרונה",
-        "3":  "תשלום",
-        "4":  "סטטוס",
-        "5":  "דוח בית",
-        "6":  "דוח יומי",
-        "7":  "כל הדוחות",
-        "8":  "חובות פתוחים",
-        "9":  "פרופילים",
-        "10": "מיזוג לקוחות",
-        "11": "חסר פספורט",
-        "12": "פספורטים",
-    }
-    if not pending and message.strip() in MENU_SHORTCUTS:
-        sessions.pop(from_number, None)
-        return handle_command(MENU_SHORTCUTS[message.strip()], from_number)
 
     # === חובות פתוחים ===
     if message.strip() in ["חובות פתוחים", "חובות"]:
@@ -2623,756 +2230,6 @@ def handle_command(message, from_number):
             # כמה לקוחות - הצג תפריט בחירה
             sessions[from_number] = {"pending": "choose_contact_passport", "contacts": contacts, "name_q": name_q}
             return _format_contact_choice_menu(contacts, "עדכון פספורט")
-
-    # === חסר פספורט - סריקת לקוחות פעילים ללא שם ויזה ===
-    if msg_s == "חסר פספורט":
-        sessions.pop(from_number, None)
-        _send_reply("⏳ סורק לקוחות פעילים ללא פספורט...", from_number)
-        def _find_missing_passport():
-            try:
-                import datetime as _dt
-                token, domain = get_access_token()
-                headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
-                one_year_ago = (_dt.datetime.utcnow() - _dt.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
-                accounts_with_missing = 0
-                total_missing = 0
-                account_details = []  # רשימת (שם_בעל_בית, [שמות_לקוחות])
-                # טען את כל בעלי הבתים
-                all_accounts = []
-                page = 1
-                while True:
-                    r = requests.get(f"{domain}/crm/v5/Accounts",
-                        headers=headers_z,
-                        params={"fields": "Account_Name,id", "per_page": 200, "page": page})
-                    if r.status_code != 200: break
-                    batch = r.json().get("data", [])
-                    if not batch: break
-                    all_accounts.extend(batch)
-                    if not r.json().get("info", {}).get("more_records"): break
-                    page += 1
-                if not all_accounts:
-                    _send_reply("❌ לא נמצאו בעלי בתים", from_number)
-                    return
-                for acc in all_accounts:
-                    acc_id = acc.get("id")
-                    acc_name = acc.get("Account_Name", "")
-                    # טען לקוחות של בעל הבית
-                    contacts_page = 1
-                    contacts = []
-                    while True:
-                        rc = requests.get(f"{domain}/crm/v5/Contacts/search",
-                            headers=headers_z,
-                            params={"criteria": f"(Account_Name.id:equals:{acc_id})",
-                                    "fields": "Full_Name,Visa_Name1,id,field11",
-                                    "per_page": 200, "page": contacts_page})
-                        if rc.status_code != 200: break
-                        batch_c = rc.json().get("data", [])
-                        if not batch_c: break
-                        contacts.extend(batch_c)
-                        if not rc.json().get("info", {}).get("more_records"): break
-                        contacts_page += 1
-                    # סנן: לקוחות ללא שם ויזה עם חשבונית בשנה האחרונה או קו פעיל
-                    missing_names = []
-                    for c in contacts:
-                        visa = c.get("Visa_Name1", "") or ""
-                        if visa.strip():
-                            continue  # יש שם ויזה - דלג
-                        c_id = c.get("id")
-                        # בדוק קו פעיל (field11 = 1 או 2)
-                        active_lines = c.get("field11", None)
-                        has_active_line = active_lines is not None and str(active_lines).strip() not in ["", "0", "None"]
-                        # בדוק אם יש חשבונית בשנה האחרונה
-                        has_recent = False
-                        if not has_active_line:
-                            try:
-                                ri = requests.get(
-                                    f"{domain}/crm/v5/Invoices/search",
-                                    headers=headers_z,
-                                    params={
-                                        "criteria": f"(Contact_Name.id:equals:{c_id})AND(Created_Time:greater_equal:{one_year_ago})",
-                                        "fields": "id", "per_page": 1
-                                    }, timeout=15)
-                                has_recent = ri.status_code == 200 and bool(ri.json().get("data"))
-                            except Exception:
-                                has_recent = False
-                        if has_active_line or has_recent:
-                            missing_names.append(c.get("Full_Name", ""))
-                    if not missing_names:
-                        continue
-                    total_missing += len(missing_names)
-                    accounts_with_missing += 1
-                    account_details.append((acc_name, missing_names))
-                    # בדוק אם יש כבר הערה "חסר פספורט" ב-Account
-                    note_content = "חסר פספורט:\n" + "\n".join(f"• {n}" for n in missing_names)
-                    try:
-                        rn = requests.get(f"{domain}/crm/v2/Accounts/{acc_id}/Notes",
-                            headers=headers_z, timeout=15)
-                        existing_note_id = None
-                        if rn.status_code == 200:
-                            for note in rn.json().get("data", []):
-                                if "חסר פספורט" in (note.get("Note_Title", "") or "") or \
-                                   "חסר פספורט" in (note.get("Note_Content", "") or ""):
-                                    existing_note_id = note.get("id")
-                                    break
-                        if existing_note_id:
-                            # עדכן הערה קיימת
-                            requests.put(
-                                f"{domain}/crm/v2/Notes/{existing_note_id}",
-                                headers={**headers_z, "Content-Type": "application/json"},
-                                json={"data": [{"id": existing_note_id, "Note_Title": "חסר פספורט", "Note_Content": note_content}]},
-                                timeout=15)
-                        else:
-                            # צור הערה חדשה
-                            requests.post(
-                                f"{domain}/crm/v2/Notes",
-                                headers={**headers_z, "Content-Type": "application/json"},
-                                json={"data": [{
-                                    "Note_Title": "חסר פספורט",
-                                    "Note_Content": note_content,
-                                    "Parent_Id": {"id": acc_id},
-                                    "se_module": "Accounts"
-                                }]},
-                                timeout=15)
-                    except Exception as e_note:
-                        pass  # המשך גם אם הערה נכשלה
-                # בנה סיכום מפורט
-                summary_lines = [f"✅ *סריקת חסר פספורט הסתיימה*"]
-                summary_lines.append(f"📋 בעלי בתים: {accounts_with_missing} | 👤 לקוחות: {total_missing}\n")
-                for acc_name_d, names_list in account_details:
-                    summary_lines.append(f"*{acc_name_d}*:")
-                    for n in names_list:
-                        summary_lines.append(f"  • {n}")
-                    summary_lines.append("")
-                _send_reply("\n".join(summary_lines), from_number)
-            except Exception as e:
-                _send_reply(f"❌ שגיאה: {e}", from_number)
-        threading.Thread(target=_find_missing_passport, daemon=True).start()
-        return "⏳ מתחיל סריקה..."
-
-    # === פונקציית עזר: בניית רשימת זוגות כפולים ===
-    def _build_merge_list(dups):
-        lines = [f"🔀 *{len(dups)} זוגות נותרים:*\n"]
-        for idx, (c1, c2, ratio) in enumerate(dups, 1):
-            v1 = (c1.get("Visa_Name1") or "").strip()
-            v2 = (c2.get("Visa_Name1") or "").strip()
-            a1 = c1.get("Account_Name", {}).get("name", "") if isinstance(c1.get("Account_Name"), dict) else str(c1.get("Account_Name", ""))
-            a2 = c2.get("Account_Name", {}).get("name", "") if isinstance(c2.get("Account_Name"), dict) else str(c2.get("Account_Name", ""))
-            pct = int(ratio * 100)
-            lines.append(f"{idx}. *{c1.get('Full_Name')}* ({a1}) ⇔️ *{c2.get('Full_Name')}* ({a2})\n   ויזה: {v1} / {v2} | דמיון: {pct}%")
-        lines.append("\nשלח מספר זוג למיזוג (לדוגמא: 1,3) או 0 לסיום")
-        return "\n".join(lines)
-
-    # === מיזוג לקוחות - חיפוש כפילוים לפי שם ויזה ===
-    if msg_s == "מיזוג לקוחות":
-        sessions.pop(from_number, None)
-        _send_reply("⏳ מחפש לקוחות כפולים לפי שם ויזה...", from_number)
-        def _find_duplicates():
-            try:
-                import difflib
-                # שלוף כל הלקוחות (Zoho לא תומך ב-is_not_empty לשדה זה, מסננים בצד שלנו)
-                all_contacts_raw = []
-                page = 1
-                while True:
-                    batch, info = zoho_get_full("Contacts", {
-                        "fields": "Full_Name,Visa_Name1,Account_Name,id,Created_Time",
-                        "per_page": 200,
-                        "page": page
-                    })
-                    if not batch:
-                        break
-                    all_contacts_raw.extend(batch)
-                    if not info.get("more_records", False):
-                        break
-                    page += 1
-                # סנן רק לקוחות עם שם ויזה
-                all_contacts = [c for c in all_contacts_raw if (c.get("Visa_Name1") or "").strip()]
-                if not all_contacts:
-                    _send_reply("❌ לא נמצאו לקוחות עם שם ויזה", from_number)
-                    return
-                # מצא כפילוים - שם ויזה זהה או דומה (>85%)
-                duplicates = []  # [(contact1, contact2, similarity)]
-                checked = set()
-                for i, c1 in enumerate(all_contacts):
-                    v1 = (c1.get("Visa_Name1") or "").strip().upper()
-                    if not v1 or c1["id"] in checked:
-                        continue
-                    for c2 in all_contacts[i+1:]:
-                        if c2["id"] in checked:
-                            continue
-                        v2 = (c2.get("Visa_Name1") or "").strip().upper()
-                        if not v2:
-                            continue
-                        # חשב דמיון
-                        ratio = difflib.SequenceMatcher(None, v1, v2).ratio()
-                        if ratio >= 0.85:
-                            duplicates.append((c1, c2, ratio))
-                if not duplicates:
-                    _send_reply("✅ לא נמצאו לקוחות כפולים!", from_number)
-                    return
-                # הצג את הכפילוים
-                lines = [f"🔀 *נמצאו {len(duplicates)} זוגות כפולים:*\n"]
-                for idx, (c1, c2, ratio) in enumerate(duplicates, 1):
-                    v1 = (c1.get("Visa_Name1") or "").strip()
-                    v2 = (c2.get("Visa_Name1") or "").strip()
-                    a1 = c1.get("Account_Name", {}).get("name", "") if isinstance(c1.get("Account_Name"), dict) else str(c1.get("Account_Name", ""))
-                    a2 = c2.get("Account_Name", {}).get("name", "") if isinstance(c2.get("Account_Name"), dict) else str(c2.get("Account_Name", ""))
-                    pct = int(ratio * 100)
-                    lines.append(f"{idx}. *{c1.get('Full_Name')}* ({a1}) ↔️ *{c2.get('Full_Name')}* ({a2})\n   ויזה: {v1} / {v2} | דמיון: {pct}%")
-                lines.append("\nשלח מספר זוג למיזוג (לדוגמא: 1,3) או 0 לביטול")
-                sessions[from_number] = {"pending": "pick_merge_pairs", "duplicates": duplicates}
-                _send_reply("\n".join(lines), from_number)
-            except Exception as e:
-                _send_reply(f"❌ שגיאה בחיפוש כפילוים: {e}", from_number)
-        threading.Thread(target=_find_duplicates, daemon=True).start()
-        return "⏳ מחפש..."
-
-    # === מיזוג - בחירת זוגות למיזוג ===
-    if pending == "pick_merge_pairs":
-        duplicates = sessions[from_number].get("duplicates", [])
-        if msg_s in ["0", "ביטול"]:
-            sessions.pop(from_number, None)
-            return "✅ בוטל"
-        # פרס מספרים
-        try:
-            chosen_indices = [int(x.strip()) - 1 for x in msg_s.split(",") if x.strip().isdigit()]
-        except:
-            return "❓ שלח מספרים מופרדים בפסיקות (לדוגמא: 1,3) או 0 לביטול"
-        invalid = [i+1 for i in chosen_indices if i < 0 or i >= len(duplicates)]
-        if invalid:
-            return f"❓ מספרים לא חוקיים: {invalid}. שלח מספרים בין 1 ל-{len(duplicates)}"
-        chosen_pairs = [duplicates[i] for i in chosen_indices]
-        # הצג אישור לכל זוג
-        lines = ["🔄 *אישור מיזוג:*\n"]
-        for c1, c2, ratio in chosen_pairs:
-            a1 = c1.get("Account_Name", {}).get("name", "") if isinstance(c1.get("Account_Name"), dict) else str(c1.get("Account_Name", ""))
-            a2 = c2.get("Account_Name", {}).get("name", "") if isinstance(c2.get("Account_Name"), dict) else str(c2.get("Account_Name", ""))
-            lines.append(f"• *{c1.get('Full_Name')}* ({a1}) + *{c2.get('Full_Name')}* ({a2})")
-            lines.append(f"  הישאר הלקוח עם חשבוניות אחרונות יותר, השני יסומן כלא פעיל")
-        lines.append("\nכתוב *כן* לאישור או *לא* לביטול")
-        sessions[from_number] = {"pending": "confirm_merge", "pairs": chosen_pairs, "duplicates": duplicates, "chosen_indices": chosen_indices}
-        return "\n".join(lines)
-
-    # === מיזוג - אישור וביצוע ===
-    if pending == "confirm_merge":
-        pairs = sessions[from_number].get("pairs", [])
-        all_duplicates = sessions[from_number].get("duplicates", [])
-        chosen_indices_done = sessions[from_number].get("chosen_indices", [])
-        if msg_s not in ["כן", "yes", "y"]:
-            sessions.pop(from_number, None)
-            return "✅ בוטל"
-        sessions.pop(from_number, None)
-        _send_reply("⏳ מתחיל מיזוג...", from_number)
-        def _do_merge():
-            try:
-                token, domain = get_access_token()
-                headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
-                results = []
-                discarded_contacts = []
-                for c1, c2, ratio in pairs:
-                    # קבע מי ישאר (חשבוניות אחרונות יותר) ומי יסומן
-                    inv1 = zoho_get("Invoices/search", {"criteria": f"(Contact_Name:equals:{c1['id']})", "fields": "id,Created_Time", "per_page": 200})
-                    inv2 = zoho_get("Invoices/search", {"criteria": f"(Contact_Name:equals:{c2['id']})", "fields": "id,Created_Time", "per_page": 200})
-                    def _latest_invoice_date(invs):
-                        dates = []
-                        for inv in invs:
-                            ct = inv.get("Created_Time") or ""
-                            if ct:
-                                dates.append(ct)
-                        return max(dates) if dates else ""
-                    d1 = _latest_invoice_date(inv1)
-                    d2 = _latest_invoice_date(inv2)
-                    # הלקוח עם חשבוניות אחרונות יותר = ישאר
-                    if d1 >= d2:
-                        keep, discard = c1, c2
-                        keep_invs, discard_invs = inv1, inv2
-                    else:
-                        keep, discard = c2, c1
-                        keep_invs, discard_invs = inv2, inv1
-                    keep_id = keep["id"]
-                    discard_id = discard["id"]
-                    moved_inv = 0
-                    moved_att = 0
-                    moved_notes = 0
-                    moved_payments = 0
-                    # 1. העבר חשבוניות מהישן לחדש
-                    for inv in discard_invs:
-                        res = zoho_put(f"Invoices/{inv['id']}", {"data": [{"id": inv["id"], "Contact_Name": {"id": keep_id}}]})
-                        if res.get("data", [{}])[0].get("code") == "SUCCESS":
-                            moved_inv += 1
-                    # 1b. העבר בקרת תשלומים (CustomModule1) מהלקוח הישן לחדש
-                    pay_page = 1
-                    while True:
-                        pay_batch, pay_info = zoho_get_full("CustomModule1/search", {
-                            "criteria": f"(Contact:equals:{discard_id})",
-                            "fields": "id,Contact,Invoice",
-                            "per_page": 200,
-                            "page": pay_page
-                        })
-                        if not pay_batch:
-                            break
-                        for pay in pay_batch:
-                            pay_id = pay["id"]
-                            res_p = zoho_put(f"CustomModule1/{pay_id}", {"data": [{"id": pay_id, "Contact": {"id": keep_id}}]})
-                            if res_p.get("data", [{}])[0].get("code") == "SUCCESS":
-                                moved_payments += 1
-                        if not pay_info.get("more_records", False):
-                            break
-                        pay_page += 1
-                    # 2. העבר קבצים מצורפים (Attachments) - הורד והעלה מחדש
-                    r_att = requests.get(f"{domain}/crm/v2/Contacts/{discard_id}/Attachments", headers=headers_z, timeout=15)
-                    if r_att.status_code == 200 and r_att.json().get("data"):
-                        for att in r_att.json()["data"]:
-                            att_id = att["id"]
-                            # הורד את הקובץ
-                            r_dl = requests.get(f"{domain}/crm/v2/Contacts/{discard_id}/Attachments/{att_id}", headers=headers_z, timeout=30)
-                            if r_dl.status_code != 200:
-                                continue
-                            file_bytes = r_dl.content
-                            fname = att.get("File_Name", "file.jpg")
-                            content_type = r_dl.headers.get("content-type", "application/octet-stream")
-                            # העלה ללקוח החדש
-                            import io
-                            upload_r = requests.post(
-                                f"{domain}/crm/v2/Contacts/{keep_id}/Attachments",
-                                headers={"Authorization": f"Zoho-oauthtoken {token}"},
-                                files={"file": (fname, io.BytesIO(file_bytes), content_type)},
-                                timeout=30
-                            )
-                            if upload_r.status_code in [200, 201]:
-                                moved_att += 1
-                    # 3. העבר הערות (Notes)
-                    r_notes = requests.get(f"{domain}/crm/v2/Contacts/{discard_id}/Notes", headers=headers_z, timeout=15)
-                    if r_notes.status_code == 200 and r_notes.json().get("data"):
-                        for note in r_notes.json()["data"]:
-                            note_body = note.get("Note_Content", "")
-                            note_title = note.get("Note_Title", "")
-                            # צור הערה חדשה בלקוח החדש
-                            new_note = {
-                                "data": [{
-                                    "Note_Title": note_title or f"מיזוג מ-{discard.get('Full_Name', '')}",
-                                    "Note_Content": note_body,
-                                    "Parent_Id": {"id": keep_id},
-                                    "se_module": "Contacts"
-                                }]
-                            }
-                            r_new_note = requests.post(f"{domain}/crm/v2/Notes", headers={**headers_z, "Content-Type": "application/json"}, json=new_note, timeout=15)
-                            if r_new_note.status_code in [200, 201]:
-                                moved_notes += 1
-                    # 4. סמן את הלקוח הישן כלא פעיל
-                    zoho_put(f"Contacts/{discard_id}", {"data": [{"id": discard_id, "Contact_Status": "לא פעיל"}]})
-                    discarded_contacts.append({"id": discard_id, "name": discard.get("Full_Name", "")})
-                    results.append(
-                        f"✅ מוזג: *{discard.get('Full_Name')}* → *{keep.get('Full_Name')}*\n"
-                        f"   חשבוניות: {moved_inv} | תשלומים: {moved_payments} | קבצים: {moved_att} | הערות: {moved_notes}"
-                    )
-                summary = "🔀 *סיכום מיזוג:*\n" + "\n".join(results)
-                # חשב את הזוגות הנותרים (בלי הזוגות שמוזגו)
-                remaining_duplicates = [d for i, d in enumerate(all_duplicates) if i not in chosen_indices_done]
-                # שאל אם למחוק את הלקוחות הישנים
-                if discarded_contacts:
-                    names_list = "\n".join(f"  • {c['name']}" for c in discarded_contacts)
-                    summary += f"\n\n🗑️ *הלקוחות הישנים סומנו כלא פעילים:*\n{names_list}\n\nהאם למחוק אותם לגמרי מ-Zoho?\nשלח *כן* למחיקה או כל דבר אחר לביטול"
-                    sessions[from_number] = {"pending": "confirm_delete_merged", "discarded_contacts": discarded_contacts, "remaining_duplicates": remaining_duplicates}
-                elif remaining_duplicates:
-                    # אין מחיקה - הצג מייד את הרשימה הנותרת
-                    summary += "\n\n" + _build_merge_list(remaining_duplicates)
-                    sessions[from_number] = {"pending": "pick_merge_pairs", "duplicates": remaining_duplicates}
-                _send_reply(summary, from_number)
-            except Exception as e:
-                _send_reply(f"❌ שגיאה במיזוג: {e}", from_number)
-        threading.Thread(target=_do_merge, daemon=True).start()
-        return "⏳ מיזוג מתבצע..."
-
-    # === אישור מחיקת לקוחות ישנים אחרי מיזוג ===
-    if pending == "confirm_delete_merged":
-        discarded_contacts = sessions[from_number].get("discarded_contacts", [])
-        remaining_duplicates = sessions[from_number].get("remaining_duplicates", [])
-        sessions.pop(from_number, None)
-        if msg_s not in ["כן", "yes", "y"]:
-            # ביטול מחיקה - הצג זוגות נותרים אם יש
-            if remaining_duplicates:
-                sessions[from_number] = {"pending": "pick_merge_pairs", "duplicates": remaining_duplicates}
-                return "✅ בוטל מחיקה - הלקוחות נשמרו כלא פעילים\n\n" + _build_merge_list(remaining_duplicates)
-            return "✅ בוטל - הלקוחות הישנים נשמרו כלא פעילים"
-        _send_reply("⏳ מוחק לקוחות ישנים...", from_number)
-        def _do_delete_merged():
-            try:
-                deleted = []
-                failed = []
-                for c in discarded_contacts:
-                    res = zoho_delete(f"Contacts/{c['id']}")
-                    code = (res.get("data", [{}])[0].get("code") or "") if res.get("data") else ""
-                    if code == "SUCCESS":
-                        deleted.append(c["name"])
-                    else:
-                        failed.append(c["name"])
-                lines = ["🗑️ *סיכום מחיקה:*"]
-                if deleted:
-                    lines.append("✅ נמחקו:")
-                    lines.extend(f"  • {n}" for n in deleted)
-                if failed:
-                    lines.append("❌ נכשלו:")
-                    lines.extend(f"  • {n}" for n in failed)
-                # הצג זוגות נותרים אם יש
-                if remaining_duplicates:
-                    lines.append("\n" + _build_merge_list(remaining_duplicates))
-                    sessions[from_number] = {"pending": "pick_merge_pairs", "duplicates": remaining_duplicates}
-                _send_reply("\n".join(lines), from_number)
-            except Exception as e:
-                _send_reply(f"❌ שגיאה במחיקה: {e}", from_number)
-        threading.Thread(target=_do_delete_merged, daemon=True).start()
-        return "⏳ מוחק..."
-
-    # === תיקון פרופיל (ללא שם) - בחירת בעל בית מהפעילים ===
-    if msg_s == "תיקון פרופיל":
-        sessions.pop(from_number, None)
-        def _load_active_accounts_fix():
-            try:
-                token2, domain2 = get_access_token()
-                h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
-                import datetime as _dt
-                one_year_ago = (_dt.datetime.utcnow() - _dt.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
-                all_accs = []
-                page = 1
-                while True:
-                    r = requests.get(f"{domain2}/crm/v5/Accounts",
-                        headers=h2,
-                        params={"fields": "Account_Name", "per_page": 200, "page": page})
-                    if r.status_code != 200: break
-                    batch = r.json().get("data", [])
-                    if not batch: break
-                    all_accs.extend(batch)
-                    if not r.json().get("info", {}).get("more_records", False): break
-                    page += 1
-                if not all_accs:
-                    _send_reply("\u274c \u05dc\u05d0 \u05e0\u05de\u05e6\u05d0\u05d5 \u05d1\u05e2\u05dc\u05d9 \u05d1\u05ea\u05d9\u05dd", from_number)
-                    return
-                active_accs = []
-                for acc in all_accs:
-                    acc_id = acc.get("id")
-                    try:
-                        inv_r = requests.get(
-                            f"{domain2}/crm/v5/Invoices/search",
-                            headers=h2,
-                            params={
-                                "criteria": f"(Account_Name.id:equals:{acc_id})AND(Created_Time:greater_equal:{one_year_ago})",
-                                "fields": "id",
-                                "per_page": 1
-                            }
-                        )
-                        if inv_r.status_code == 200 and inv_r.json().get("data"):
-                            active_accs.append(acc)
-                    except Exception:
-                        pass
-                if not active_accs:
-                    _send_reply("\u274c \u05dc\u05d0 \u05e0\u05de\u05e6\u05d0\u05d5 \u05d1\u05e2\u05dc\u05d9 \u05d1\u05ea\u05d9\u05dd \u05e4\u05e2\u05d9\u05dc\u05d9\u05dd", from_number)
-                    return
-                active_accs.sort(key=lambda a: a.get("Account_Name", ""))
-                sessions[from_number] = {
-                    "pending": "fix_profile_pick_account",
-                    "accounts": active_accs
-                }
-                all_lines = [f"{j}. {a.get('Account_Name','')}" for j, a in enumerate(active_accs, 1)]
-                footer = "\n\u05e9\u05dc\u05d7 \u05de\u05e1\u05e4\u05e8 \u05d1\u05e2\u05dc \u05d4\u05d1\u05d9\u05ea (0 \u05dc\u05d1\u05d9\u05d8\u05d5\u05dc):"
-                MAX_CHARS = 1400
-                chunks = []
-                current_chunk = ["\U0001f3e0 *\u05ea\u05d9\u05e7\u05d5\u05df \u05e4\u05e8\u05d5\u05e4\u05d9\u05dc - \u05d1\u05d7\u05e8 \u05d1\u05e2\u05dc \u05d1\u05d9\u05ea (\u05e4\u05e2\u05d9\u05dc\u05d9\u05dd):*"]
-                current_len = len(current_chunk[0])
-                for line in all_lines:
-                    if current_len + len(line) + 1 > MAX_CHARS:
-                        chunks.append("\n".join(current_chunk))
-                        current_chunk = []
-                        current_len = 0
-                    current_chunk.append(line)
-                    current_len += len(line) + 1
-                if current_chunk:
-                    chunks.append("\n".join(current_chunk))
-                for i, chunk in enumerate(chunks):
-                    if i == len(chunks) - 1:
-                        _send_reply(chunk + footer, from_number)
-                    else:
-                        _send_reply(chunk, from_number)
-            except Exception as e:
-                _send_reply(f"\u274c \u05e9\u05d2\u05d9\u05d0\u05d4: {e}", from_number)
-        threading.Thread(target=_load_active_accounts_fix, daemon=True).start()
-        return "\u23f3 \u05d8\u05d5\u05e2\u05df \u05e8\u05e9\u05d9\u05de\u05ea \u05d1\u05e2\u05dc\u05d9 \u05d1\u05ea\u05d9\u05dd \u05e4\u05e2\u05d9\u05dc\u05d9\u05dd..."
-
-    # === תיקון פרופיל - בחירת בעל בית ===
-    if pending == "fix_profile_pick_account":
-        accounts = session.get("accounts", [])
-        choice = message.strip()
-        if choice == "0":
-            sessions.pop(from_number, None)
-            return "\u274c \u05d1\u05d5\u05d8\u05dc"
-        if not choice.isdigit() or not (1 <= int(choice) <= len(accounts)):
-            return f"\u2753 \u05e9\u05dc\u05d7 \u05de\u05e1\u05e4\u05e8 \u05d1\u05d9\u05df 1 \u05dc-{len(accounts)}, \u05d0\u05d5 0 \u05dc\u05d1\u05d9\u05d8\u05d5\u05dc"
-        idx = int(choice) - 1
-        account = accounts[idx]
-        aname = account.get("Account_Name", "")
-        sessions.pop(from_number, None)
-        def _load_contacts_for_fix(account=account, aname=aname):
-            try:
-                token2, domain2 = get_access_token()
-                h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
-                acc_id = account.get("id")
-                rc = requests.get(f"{domain2}/crm/v2/Contacts/search",
-                    headers=h2,
-                    params={"criteria": f"(Account_Name:equals:{acc_id})", "fields": "Full_Name,id", "per_page": 200})
-                contacts = rc.json().get("data", []) if rc.status_code == 200 else []
-                if not contacts:
-                    _send_reply(f"\u274c \u05dc\u05d0 \u05e0\u05de\u05e6\u05d0\u05d5 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea \u05d1\u05d1\u05d9\u05ea {aname}", from_number)
-                    return
-                contacts.sort(key=lambda c: c.get("Full_Name", ""))
-                sessions[from_number] = {
-                    "pending": "fix_profile_pick_contacts",
-                    "account": account,
-                    "contacts": contacts
-                }
-                all_lines = [f"{j}. {c.get('Full_Name','')}" for j, c in enumerate(contacts, 1)]
-                footer = "\n\u05e9\u05dc\u05d7 \u05de\u05e1\u05e4\u05e8\u05d9\u05dd \u05de\u05d5\u05e4\u05e8\u05d3\u05d9\u05dd \u05d1\u05e4\u05e1\u05d9\u05e7\u05d5\u05ea (1,3,5) \u05d0\u05d5 '\u05d4\u05db\u05dc', \u05d0\u05d5 0 \u05dc\u05d1\u05d9\u05d8\u05d5\u05dc:"
-                MAX_CHARS = 1400
-                chunks = []
-                current_chunk = [f"\U0001f465 *\u05dc\u05e7\u05d5\u05d7\u05d5\u05ea \u05e9\u05dc {aname}:*"]
-                current_len = len(current_chunk[0])
-                for line in all_lines:
-                    if current_len + len(line) + 1 > MAX_CHARS:
-                        chunks.append("\n".join(current_chunk))
-                        current_chunk = []
-                        current_len = 0
-                    current_chunk.append(line)
-                    current_len += len(line) + 1
-                if current_chunk:
-                    chunks.append("\n".join(current_chunk))
-                for i, chunk in enumerate(chunks):
-                    if i == len(chunks) - 1:
-                        _send_reply(chunk + footer, from_number)
-                    else:
-                        _send_reply(chunk, from_number)
-            except Exception as e:
-                _send_reply(f"\u274c \u05e9\u05d2\u05d9\u05d0\u05d4: {e}", from_number)
-        threading.Thread(target=_load_contacts_for_fix, daemon=True).start()
-        return f"\u23f3 \u05d8\u05d5\u05e2\u05df \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea \u05e9\u05dc {aname}..."
-
-    # === תיקון פרופיל - בחירת לקוחות ===
-    if pending == "fix_profile_pick_contacts":
-        account = session.get("account", {})
-        contacts = session.get("contacts", [])
-        aname = account.get("Account_Name", "")
-        choice = message.strip()
-        if choice == "0":
-            sessions.pop(from_number, None)
-            return "\u274c \u05d1\u05d5\u05d8\u05dc"
-        import re as _re_fp
-        if choice.strip() == "\u05d4\u05db\u05dc":
-            nums = list(range(1, len(contacts) + 1))
-        else:
-            nums = [int(x) for x in _re_fp.findall(r'\d+', choice) if 1 <= int(x) <= len(contacts)]
-        if not nums:
-            return f"\u2753 \u05e9\u05dc\u05d7 \u05de\u05e1\u05e4\u05e8\u05d9\u05dd \u05d1\u05d9\u05df 1 \u05dc-{len(contacts)}, \u05d0\u05d5 0 \u05dc\u05d1\u05d9\u05d8\u05d5\u05dc"
-        chosen = [contacts[i-1] for i in nums]
-        sessions.pop(from_number, None)
-        def _load_files_for_chosen(chosen=chosen, account=account, aname=aname):
-            try:
-                token2, domain2 = get_access_token()
-                h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
-                img_exts = ('.jpg','.jpeg','.png','.webp','.heic','.heif')
-                contacts_with_files = []
-                for c in chosen:
-                    cid = c["id"]
-                    r = requests.get(f"{domain2}/crm/v2/Contacts/{cid}/Attachments", headers=h2)
-                    atts = r.json().get("data", []) if r.status_code == 200 else []
-                    image_atts = [a for a in atts if a.get("File_Name","").lower().endswith(img_exts)]
-                    contacts_with_files.append((c, image_atts))
-                # שמור session לפני שליחת תמונות
-                sessions[from_number] = {
-                    "pending": "fix_profile_choose_file",
-                    "account": account,
-                    "contacts_with_files": contacts_with_files
-                }
-                # שלח תמונות לוואטסאפ לכל לקוח
-                for c, image_atts in contacts_with_files:
-                    cname = c.get("Full_Name", "")
-                    cid = c["id"]
-                    if not image_atts:
-                        _send_reply(f"*{cname}*: \u05d0\u05d9\u05df \u05ea\u05de\u05d5\u05e0\u05d5\u05ea", from_number)
-                        continue
-                    # שלח כותרת שם לקוח
-                    _send_reply(f"\U0001f464 *{cname}* ({len(image_atts)} \u05ea\u05deונות):", from_number)
-                    for j, a in enumerate(image_atts, 1):
-                        try:
-                            r2 = requests.get(f"{domain2}/crm/v2/Contacts/{cid}/Attachments/{a['id']}", headers=h2, timeout=15)
-                            if r2.status_code == 200:
-                                img_url = _store_temp_image(r2.content, "image/jpeg", ttl=600)
-                                _send_whatsapp_image(img_url, f"{j}. {a.get('File_Name','')}", from_number)
-                                time.sleep(0.5)
-                            else:
-                                _send_reply(f"  {j}. {a.get('File_Name','')} (\u05dc\u05d0 \u05e0\u05d8ען)", from_number)
-                        except Exception as img_e:
-                            _send_reply(f"  {j}. {a.get('File_Name','')} (\u05e9\u05d2\u05d9\u05d0\u05d4: {str(img_e)[:30]})", from_number)
-                        time.sleep(0.3)
-                # שלח הוראות בסוף
-                footer_lines = [
-                    "\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05d9\u05d7\u05d9\u05d3: [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7] [\u05de\u05e1\u05e4\u05e8 \u05e7\u05d5\u05d1\u05e5]",
-                    "  \u05dc\u05d3\u05d5\u05d2\u05de\u05d0: \u05d9\u05d5\u05e1\u05d9 \u05db\u05d4\u05df 2",
-                    "\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05de\u05e8\u05d5\u05d1\u05d4 (\u05d0\u05d5\u05ea\u05d5 \u05e7\u05d5\u05d1\u05e5): [\u05de\u05e1\u05e4\u05e8\u05d9 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea] \u05e7\u05d5\u05d1\u05e5 [\u05de\u05e1\u05e4\u05e8]",
-                    "  \u05dc\u05d3\u05d5\u05d2\u05de\u05d0: 1,3,5 \u05e7\u05d5\u05d1\u05e5 2",
-                    "0 = \u05d1\u05d9\u05d8\u05d5\u05dc"
-                ]
-                _send_reply("\n".join(footer_lines), from_number)
-            except Exception as e:
-                _send_reply(f"\u274c \u05e9\u05d2\u05d9\u05d0\u05d4: {e}", from_number)
-        threading.Thread(target=_load_files_for_chosen, daemon=True).start()
-        names = ", ".join(c.get("Full_Name","") for c in chosen)
-        return f"\u23f3 \u05d8\u05d5\u05e2\u05df \u05e7\u05d1\u05e6\u05d9\u05dd \u05e2\u05d1\u05d5\u05e8: {names}..."
-
-    # === תיקון פרופיל - בחירת קובץ (יחיד או מרובה) ===
-    if pending == "fix_profile_choose_file":
-        account = session.get("account", {})
-        contacts_with_files = session.get("contacts_with_files", [])
-        aname = account.get("Account_Name", "")
-        choice = message.strip()
-        if choice == "0":
-            sessions.pop(from_number, None)
-            return "\u274c \u05d1\u05d5\u05d8\u05dc"
-        import re as _re_fp2
-        # תיקון מרובה: "1,3,5 קובץ 2" או "הכל קובץ 2"
-        multi_match = _re_fp2.match(r'^(\u05d4\u05db\u05dc|[\d,\s]+)\s+\u05e7\u05d5\u05d1\u05e5\s+(\d+)$', choice)
-        if multi_match:
-            sel_str = multi_match.group(1).strip()
-            file_num = int(multi_match.group(2))
-            if sel_str == "\u05d4\u05db\u05dc":
-                sel_nums = list(range(1, len(contacts_with_files) + 1))
-            else:
-                sel_nums = [int(x) for x in _re_fp2.findall(r'\d+', sel_str) if 1 <= int(x) <= len(contacts_with_files)]
-            if not sel_nums:
-                return "\u2753 \u05de\u05e1\u05e4\u05e8\u05d9 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea \u05dc\u05d0 \u05ea\u05e7\u05d9\u05e0\u05d9\u05dd"
-            to_update = []
-            for n in sel_nums:
-                c, image_atts = contacts_with_files[n-1]
-                if 1 <= file_num <= len(image_atts):
-                    to_update.append((c, image_atts[file_num-1]))
-                else:
-                    to_update.append((c, None))
-            sessions.pop(from_number, None)
-            def _do_multi_fix(to_update=to_update, account=account, aname=aname, contacts_with_files=contacts_with_files, file_num=file_num):
-                try:
-                    token2, domain2 = get_access_token()
-                    h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
-                    for c, att in to_update:
-                        cname = c.get("Full_Name", "")
-                        cid = c["id"]
-                        if att is None:
-                            _send_reply(f"\u26a0\ufe0f {cname}: \u05e7\u05d5\u05d1\u05e5 {file_num} \u05dc\u05d0 \u05e7\u05d9\u05d9\u05dd", from_number)
-                            continue
-                        r2 = requests.get(f"{domain2}/crm/v2/Contacts/{cid}/Attachments/{att['id']}", headers=h2)
-                        if r2.status_code != 200:
-                            _send_reply(f"\u274c {cname}: \u05dc\u05d0 \u05d4\u05e6\u05dc\u05d7\u05ea\u05d9 \u05dc\u05d4\u05d5\u05e8\u05d9\u05d3 {att['File_Name']}", from_number)
-                            continue
-                        face_bytes, face_dbg = _crop_face_center(r2.content)
-                        if not face_bytes:
-                            _send_reply(f"\u26a0\ufe0f {cname}: \u05d7\u05d9\u05ea\u05d5\u05da \u05e4\u05e0\u05d9\u05dd \u05e0\u05db\u05e9\u05dc ({face_dbg[:50]})", from_number)
-                            continue
-                        photo_resp = requests.post(
-                            f"{domain2}/crm/v2/Contacts/{cid}/photo",
-                            headers=h2,
-                            files={"file": ("profile.jpg", face_bytes, "image/jpeg")}
-                        )
-                        if photo_resp.status_code in [200, 201, 202]:
-                            _send_reply(f"\u2705 {cname}: \u05e2\u05d5\u05d3\u05db\u05df \u05de-{att['File_Name']}", from_number)
-                        else:
-                            _send_reply(f"\u274c {cname}: \u05e9\u05d2\u05d9\u05d0\u05d4 Zoho ({photo_resp.status_code})", from_number)
-                        import time as _t; _t.sleep(0.3)
-                    # הצג שוב את הרשימה לתיקון נוסף
-                    lines = [f"\U0001f4cb *\u05e7\u05d1\u05e6\u05d9 \u05ea\u05de\u05d5\u05e0\u05d4 - {aname}:*", ""]
-                    for cc, image_atts2 in contacts_with_files:
-                        ccname = cc.get("Full_Name", "")
-                        if not image_atts2:
-                            lines.append(f"*{ccname}*: \u05d0\u05d9\u05df \u05ea\u05de\u05d5\u05e0\u05d5\u05ea")
-                        else:
-                            lines.append(f"*{ccname}*:")
-                            for j, a in enumerate(image_atts2, 1):
-                                lines.append(f"  {j}. {a.get('File_Name','')}")
-                    lines.append("")
-                    lines.append("\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05d9\u05d7\u05d9\u05d3: [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7] [\u05de\u05e1\u05e4\u05e8 \u05e7\u05d5\u05d1\u05e5]")
-                    lines.append("\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05de\u05e8\u05d5\u05d1\u05d4: [\u05de\u05e1\u05e4\u05e8\u05d9 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea] \u05e7\u05d5\u05d1\u05e5 [\u05de\u05e1\u05e4\u05e8]")
-                    lines.append("0 = \u05e1\u05d9\u05d5\u05dd")
-                    sessions[from_number] = {
-                        "pending": "fix_profile_choose_file",
-                        "account": account,
-                        "contacts_with_files": contacts_with_files
-                    }
-                    _send_reply("\n".join(lines), from_number)
-                except Exception as e:
-                    _send_reply(f"\u274c \u05e9\u05d2\u05d9\u05d0\u05d4: {e}", from_number)
-            threading.Thread(target=_do_multi_fix, daemon=True).start()
-            return f"\u23f3 \u05de\u05e2\u05d3\u05db\u05df {len(to_update)} \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea \u05e2\u05dd \u05e7\u05d5\u05d1\u05e5 {file_num}..."
-        # תיקון יחיד: "יוסי כהן 2"
-        single_match = _re_fp2.match(r'^(.+?)\s+(\d+)$', choice)
-        if single_match:
-            name_part = single_match.group(1).strip()
-            file_num = int(single_match.group(2))
-            matched = [(i, c, atts) for i, (c, atts) in enumerate(contacts_with_files)
-                       if name_part.lower() in c.get("Full_Name","").lower()]
-            if not matched:
-                return f"\u2753 \u05dc\u05d0 \u05de\u05e6\u05d0\u05ea\u05d9 \u05dc\u05e7\u05d5\u05d7 \u05d1\u05e9\u05dd '{name_part}'"
-            if len(matched) > 1:
-                names = ", ".join(c.get("Full_Name","") for _, c, _ in matched)
-                return f"\u2753 \u05e0\u05de\u05e6\u05d0\u05d5 \u05db\u05de\u05d4 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea: {names}. \u05e9\u05dc\u05d7 \u05e9\u05dd \u05de\u05d3\u05d5\u05d9\u05e7 \u05d9\u05d5\u05ea\u05e8."
-            _, c, image_atts = matched[0]
-            cname = c.get("Full_Name", "")
-            cid = c["id"]
-            if not image_atts:
-                return f"\u274c {cname}: \u05d0\u05d9\u05df \u05ea\u05de\u05d5\u05e0\u05d5\u05ea"
-            if not (1 <= file_num <= len(image_atts)):
-                return f"\u2753 {cname}: \u05e7\u05d5\u05d1\u05e5 {file_num} \u05dc\u05d0 \u05e7\u05d9\u05d9\u05dd (\u05d9\u05e9 {len(image_atts)} \u05e7\u05d1\u05e6\u05d9\u05dd)"
-            att = image_atts[file_num - 1]
-            sessions.pop(from_number, None)
-            def _do_single_fix(c=c, att=att, cname=cname, cid=cid, account=account, aname=aname, contacts_with_files=contacts_with_files):
-                try:
-                    token2, domain2 = get_access_token()
-                    h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
-                    r2 = requests.get(f"{domain2}/crm/v2/Contacts/{cid}/Attachments/{att['id']}", headers=h2)
-                    if r2.status_code != 200:
-                        _send_reply(f"\u274c \u05dc\u05d0 \u05d4\u05e6\u05dc\u05d7\u05ea\u05d9 \u05dc\u05d4\u05d5\u05e8\u05d9\u05d3 {att['File_Name']}", from_number)
-                        return
-                    face_bytes, face_dbg = _crop_face_center(r2.content)
-                    if not face_bytes:
-                        _send_reply(f"\u26a0\ufe0f {cname}: \u05d7\u05d9\u05ea\u05d5\u05da \u05e4\u05e0\u05d9\u05dd \u05e0\u05db\u05e9\u05dc ({face_dbg[:50]})", from_number)
-                    else:
-                        photo_resp = requests.post(
-                            f"{domain2}/crm/v2/Contacts/{cid}/photo",
-                            headers=h2,
-                            files={"file": ("profile.jpg", face_bytes, "image/jpeg")}
-                        )
-                        if photo_resp.status_code in [200, 201, 202]:
-                            _send_reply(f"\u2705 {cname}: \u05e2\u05d5\u05d3\u05db\u05df \u05de-{att['File_Name']}", from_number)
-                        else:
-                            _send_reply(f"\u274c {cname}: \u05e9\u05d2\u05d9\u05d0\u05d4 Zoho ({photo_resp.status_code})", from_number)
-                    # הצג שוב את הרשימה לתיקון נוסף
-                    lines = [f"\U0001f4cb *\u05e7\u05d1\u05e6\u05d9 \u05ea\u05de\u05d5\u05e0\u05d4 - {aname}:*", ""]
-                    for cc, image_atts2 in contacts_with_files:
-                        ccname = cc.get("Full_Name", "")
-                        if not image_atts2:
-                            lines.append(f"*{ccname}*: \u05d0\u05d9\u05df \u05ea\u05de\u05d5\u05e0\u05d5\u05ea")
-                        else:
-                            lines.append(f"*{ccname}*:")
-                            for j, a in enumerate(image_atts2, 1):
-                                lines.append(f"  {j}. {a.get('File_Name','')}")
-                    lines.append("")
-                    lines.append("\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05d9\u05d7\u05d9\u05d3: [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7] [\u05de\u05e1\u05e4\u05e8 \u05e7\u05d5\u05d1\u05e5]")
-                    lines.append("\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05de\u05e8\u05d5\u05d1\u05d4: [\u05de\u05e1\u05e4\u05e8\u05d9 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea] \u05e7\u05d5\u05d1\u05e5 [\u05de\u05e1\u05e4\u05e8]")
-                    lines.append("0 = \u05e1\u05d9\u05d5\u05dd")
-                    sessions[from_number] = {
-                        "pending": "fix_profile_choose_file",
-                        "account": account,
-                        "contacts_with_files": contacts_with_files
-                    }
-                    _send_reply("\n".join(lines), from_number)
-                except Exception as e:
-                    _send_reply(f"\u274c \u05e9\u05d2\u05d9\u05d0\u05d4: {e}", from_number)
-            threading.Thread(target=_do_single_fix, daemon=True).start()
-            return f"\u23f3 \u05de\u05e2\u05d3\u05db\u05df \u05e4\u05e8\u05d5\u05e4\u05d9\u05dc \u05e9\u05dc {cname}..."
-        return "\u2753 \u05e4\u05d5\u05e8\u05de\u05d8 \u05dc\u05d0 \u05de\u05d5\u05db\u05e8.\n\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05d9\u05d7\u05d9\u05d3: [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7] [\u05de\u05e1\u05e4\u05e8 \u05e7\u05d5\u05d1\u05e5]\n\u05dc\u05ea\u05d9\u05e7\u05d5\u05df \u05de\u05e8\u05d5\u05d1\u05d4: [\u05de\u05e1\u05e4\u05e8\u05d9 \u05dc\u05e7\u05d5\u05d7\u05d5\u05ea] \u05e7\u05d5\u05d1\u05e5 [\u05de\u05e1\u05e4\u05e8]\n0 = \u05d1\u05d9\u05d8\u05d5\u05dc"
 
     # === תיקון פרופיל [שם לקוח] ===
     if msg_s.startswith("תיקון פרופיל "):
@@ -3516,27 +2373,10 @@ def handle_command(message, from_number):
             sessions[from_number] = {"pending": "choose_account_check_profile", "accounts": accounts, "name_q": name_q}
             return _format_account_choice_menu(accounts, "בדיקת פרופילים")
 
-    # === פרופיל כללי - בחירת סוג סינון ===
+    # === פרופיל כללי - בחירת בעלי בתים לעדכון ===
     if msg_s == "פרופיל כללי":
         sessions.pop(from_number, None)
-        sessions[from_number] = {"pending": "profile_filter_type"}
-        return ("\U0001f50d *\u05e4\u05e8\u05d5\u05e4\u05d9\u05dc \u05db\u05dc\u05dc\u05d9 - \u05e1\u05d9\u05e0\u05d5\u05df \u05d1\u05e2\u05dc\u05d9 \u05d1\u05ea\u05d9\u05dd:*\n\n"
-                "1\ufe0f\u20e3 \u05e4\u05e2\u05d9\u05dc\u05d9\u05dd (\u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea \u05d1\u05e9\u05e0\u05d4 \u05d4\u05d0\u05d7\u05e8\u05d5\u05e0\u05d4)\n"
-                "2\ufe0f\u20e3 \u05dc\u05d0 \u05e4\u05e2\u05d9\u05dc\u05d9\u05dd (\u05dc\u05dc\u05d0 \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea \u05d1\u05e9\u05e0\u05d4 \u05d4\u05d0\u05d7\u05e8\u05d5\u05e0\u05d4)\n"
-                "3\ufe0f\u20e3 \u05d4\u05db\u05dc\n\n"
-                "\u05e9\u05dc\u05d7 1, 2 \u05d0\u05d5 3:")
-
-    # === פרופיל כללי - קבלת סינון וטעינת בעלי בתים ===
-    if pending == "profile_filter_type":
-        choice_f = message.strip()
-        if choice_f == "0":
-            sessions.pop(from_number, None)
-            return "❌ בוטל"
-        if choice_f not in ("1", "2", "3"):
-            return "❓ שלח 1 (פעילים), 2 (לא פעילים) או 3 (הכל)"
-        filter_mode = {"1": "active", "2": "inactive", "3": "all"}[choice_f]
-        sessions.pop(from_number, None)
-        def _load_all_accounts_for_profile(filter_mode=filter_mode):
+        def _load_all_accounts_for_profile():
             try:
                 token2, domain2 = get_access_token()
                 h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
@@ -3555,40 +2395,6 @@ def handle_command(message, from_number):
                     page += 1
                 if not all_accs:
                     _send_reply("❌ לא נמצאו בעלי בתים", from_number)
-                    return
-
-                # סינון לפי פעילות חשבוניות
-                if filter_mode in ("active", "inactive"):
-                    import datetime as _dt
-                    one_year_ago = (_dt.datetime.utcnow() - _dt.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
-                    _send_reply(f"🔍 בודק פעילות חשבוניות עבור {len(all_accs)} בעלי בתים...", from_number)
-                    filtered = []
-                    for acc in all_accs:
-                        acc_id = acc.get("id")
-                        acc_name = acc.get("Account_Name", "")
-                        try:
-                            inv_r = requests.get(
-                                f"{domain2}/crm/v5/Invoices/search",
-                                headers=h2,
-                                params={
-                                    "criteria": f"(Account_Name.id:equals:{acc_id})AND(Created_Time:greater_equal:{one_year_ago})",
-                                    "fields": "id",
-                                    "per_page": 1
-                                }
-                            )
-                            has_recent = inv_r.status_code == 200 and bool(inv_r.json().get("data"))
-                        except Exception:
-                            has_recent = False
-                        if filter_mode == "active" and has_recent:
-                            filtered.append(acc)
-                        elif filter_mode == "inactive" and not has_recent:
-                            filtered.append(acc)
-                    label = "פעילים" if filter_mode == "active" else "לא פעילים"
-                    _send_reply(f"✅ נמצאו {len(filtered)} בעלי בתים {label}", from_number)
-                    all_accs = filtered
-
-                if not all_accs:
-                    _send_reply("❌ לא נמצאו בעלי בתים מתאימים", from_number)
                     return
                 # מיין לפי שם
                 all_accs.sort(key=lambda a: a.get("Account_Name", ""))
@@ -3642,97 +2448,38 @@ def handle_command(message, from_number):
         sessions.pop(from_number, None)
         names = ", ".join(a.get("Account_Name","") for a in chosen)
         def _run_general_profile():
-            try:
-                total_updated = 0
-                total_skipped = 0
-                for acc in chosen:
-                    aname = acc.get("Account_Name", "")
+            total_updated = 0
+            total_failed = 0
+            for acc in chosen:
+                aname = acc.get("Account_Name", "")
+                try:
                     _send_reply(f"⏳ מעדכן פרופילים - *{aname}*...", from_number)
-                    ret = bulk_profile_update_for_account(acc, from_number)
-                    # הפונקציה מחזירה tuple (result, used_att_ids) או string
-                    if isinstance(ret, tuple):
-                        result = ret[0]
-                    else:
-                        result = ret
-                    if result:
-                        _send_reply(str(result), from_number)
-                _send_reply(f"✅ *סיום פרופיל כללי*\nעודכנו {len(chosen)} בעלי בתים: {names}", from_number)
-            except Exception as e:
-                _send_reply(f"❌ שגיאה: {e}", from_number)
+                    result, _ = bulk_profile_update_for_account(acc, from_number)
+                    # ספור עדכונים/שגיאות מהתוצאה
+                    if "עודכנו:" in result:
+                        for line in result.split("\n"):
+                            if "עודכנו:" in line:
+                                try: total_updated += int(''.join(filter(str.isdigit, line)))
+                                except: pass
+                            elif "שגיאות:" in line:
+                                try: total_failed += int(''.join(filter(str.isdigit, line)))
+                                except: pass
+                except Exception as e:
+                    _send_reply(f"❌ שגיאה בעיבוד *{aname}*: {str(e)[:80]}", from_number)
+            _send_reply(
+                f"✅ *סיום פרופיל כללי*\n"
+                f"🏠 בעלי בתים: {len(chosen)}\n"
+                f"🟢 סה\"כ עודכנו: {total_updated}\n"
+                + (f"❌ שגיאות: {total_failed}" if total_failed else ""),
+                from_number
+            )
         threading.Thread(target=_run_general_profile, daemon=True).start()
         return f"⏳ מתחיל עדכון פרופילים ל-{len(chosen)} בעלי בתים..."
 
-    # === תפריט פספורטים ===
-    if msg_s == "פספורטים":
-        sessions[from_number] = {"pending": "passport_submenu"}
-        return ("📎 *פספורטים* - בחר פעולה:\n"
-                "────────────────────────────\n"
-                "1. עדכון פספורט [שם]\n"
-                "2. פספורט בית [בעל בית]\n"
-                "3. פספורט כללי\n"
-                "4. חסר פספורט\n"
-                "────────────────────────────\n"
-                "0 לביטול | 9 לתפריט ראשי")
-
-    # === תפריט פרופילים ===
-    if msg_s == "פרופילים":
-        sessions[from_number] = {"pending": "profile_submenu"}
-        return ("📷 *פרופילים* - בחר פעולה:\n"
-                "────────────────────────────\n"
-                "1. פרופיל בית [בעל בית]\n"
-                "2. פרופיל כללי\n"
-                "3. תיקון פרופיל [שם]\n"
-                "4. בדוק פרופיל בית [בעל בית]\n"
-                "────────────────────────────\n"
-                "0 לביטול | 9 לתפריט ראשי")
-
-    # === טיפול בבחירת תפריט פספורטים ===
-    if pending == "passport_submenu":
-        ch = message.strip()
-        sessions.pop(from_number, None)
-        if ch == "1":
-            return handle_command("עדכון פספורט ", from_number)
-        elif ch == "2":
-            return handle_command("פספורט בית ", from_number)
-        elif ch == "3":
-            return handle_command("פספורט כללי", from_number)
-        elif ch == "4":
-            return handle_command("חסר פספורט", from_number)
-        return handle_command("פספורטים", from_number)
-
-    # === טיפול בבחירת תפריט פרופילים ===
-    if pending == "profile_submenu":
-        ch = message.strip()
-        sessions.pop(from_number, None)
-        if ch == "1":
-            return handle_command("פרופיל בית ", from_number)
-        elif ch == "2":
-            return handle_command("פרופיל כללי", from_number)
-        elif ch == "3":
-            return handle_command("תיקון פרופיל ", from_number)
-        elif ch == "4":
-            return handle_command("בדוק פרופיל בית ", from_number)
-        return handle_command("פרופילים", from_number)
-
     # === פספורט כללי - בחירת בעלי בתים לעדכון ===
     if msg_s == "פספורט כללי":
-        sessions[from_number] = {"pending": "passport_filter_type"}
-        return ("U0001f4ce *פספורט כללי* - בחר סוג בעלי בתים:\n"
-                "1. פעילים (יש חשבונית בשנה אחרונה)\n"
-                "2. לא פעילים\n"
-                "3. הכל\n"
-                "0. ביטול")
-    # === פספורט כללי - קבלת סינון וטעינת בעלי בתים ===
-    if pending == "passport_filter_type":
-        choice_f = message.strip()
-        if choice_f == "0":
-            sessions.pop(from_number, None)
-            return "❌ בוטל"
-        if choice_f not in ("1", "2", "3"):
-            return "❓ שלח 1 (פעילים), 2 (לא פעילים) או 3 (הכל)"
-        filter_mode = {"1": "active", "2": "inactive", "3": "all"}[choice_f]
         sessions.pop(from_number, None)
-        def _load_all_accounts_for_passport(filter_mode=filter_mode):
+        def _load_all_accounts_for_passport():
             try:
                 token2, domain2 = get_access_token()
                 h2 = {"Authorization": f"Zoho-oauthtoken {token2}"}
@@ -3752,37 +2499,6 @@ def handle_command(message, from_number):
                 if not all_accs:
                     _send_reply("❌ לא נמצאו בעלי בתים", from_number)
                     return
-                # סינון לפי פעילות חשבוניות
-                if filter_mode in ("active", "inactive"):
-                    import datetime as _dt
-                    one_year_ago = (_dt.datetime.utcnow() - _dt.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
-                    _send_reply(f"\U0001f50d בודק פעילות חשבוניות עבור {len(all_accs)} בעלי בתים...", from_number)
-                    filtered = []
-                    for acc in all_accs:
-                        acc_id = acc.get("id")
-                        try:
-                            inv_r = requests.get(
-                                f"{domain2}/crm/v5/Invoices/search",
-                                headers=h2,
-                                params={
-                                    "criteria": f"(Account_Name.id:equals:{acc_id})AND(Created_Time:greater_equal:{one_year_ago})",
-                                    "fields": "id",
-                                    "per_page": 1
-                                }
-                            )
-                            has_recent = inv_r.status_code == 200 and bool(inv_r.json().get("data"))
-                        except Exception:
-                            has_recent = False
-                        if filter_mode == "active" and has_recent:
-                            filtered.append(acc)
-                        elif filter_mode == "inactive" and not has_recent:
-                            filtered.append(acc)
-                    label = "פעילים" if filter_mode == "active" else "לא פעילים"
-                    _send_reply(f"\u2705 נמצאו {len(filtered)} בעלי בתים {label}", from_number)
-                    all_accs = filtered
-                if not all_accs:
-                    _send_reply("❌ לא נמצאו בעלי בתים מתאימים", from_number)
-                    return
                 all_accs.sort(key=lambda a: a.get("Account_Name", ""))
                 sessions[from_number] = {
                     "pending": "pick_accounts_general_passport",
@@ -3792,7 +2508,7 @@ def handle_command(message, from_number):
                 footer = "\nשלח מספרים מופרדים בפסיקות (1,3,5) או 'הכל' לבחירת הכל, או 0 לביטול"
                 MAX_CHARS = 1400
                 chunks = []
-                current_chunk = ["\U0001f4ce *בחר בעלי בתים לעדכון פספורט:*"]
+                current_chunk = ["📎 *בחר בעלי בתים לעדכון פספורט:*"]
                 current_len = len(current_chunk[0])
                 for line in all_lines:
                     if current_len + len(line) + 1 > MAX_CHARS:
@@ -3843,36 +2559,6 @@ def handle_command(message, from_number):
         threading.Thread(target=_run_general_passport, daemon=True).start()
         return f"⏳ מתחיל עדכון פספורטים ל-{len(chosen)} בעלי בתים..."
 
-    # === פספורט בית - בחירת כמה בעלי בתים ===
-    if pending == "pick_multi_accounts_passport":
-        accounts_list = session.get("accounts", [])
-        choice = message.strip()
-        if choice == "0":
-            sessions.pop(from_number, None)
-            return "❌ בוטל"
-        import re as _re3
-        if choice.strip() == "הכל":
-            nums = list(range(1, len(accounts_list) + 1))
-        else:
-            nums = [int(x) for x in _re3.findall(r'\d+', choice) if 1 <= int(x) <= len(accounts_list)]
-        if not nums:
-            return f"❓ שלח מספרים בין 1 ל-{len(accounts_list)}, או 0 לביטול"
-        chosen = [accounts_list[i-1] for i in nums]
-        sessions.pop(from_number, None)
-        names = ", ".join(a.get("Account_Name","") for a in chosen)
-        def _run_multi_passport():
-            try:
-                for acc in chosen:
-                    aname = acc.get("Account_Name", "")
-                    _send_reply(f"⏳ מעדכן פספורטים - *{aname}*...", from_number)
-                    result = bulk_passport_update_for_account(acc, from_number)
-                    _send_reply(result, from_number)
-                _send_reply(f"✅ *סיום עדכון פספורטים*\nעודכנו {len(chosen)} בעלי בתים: {names}", from_number)
-            except Exception as e:
-                _send_reply(f"❌ שגיאה: {e}", from_number)
-        threading.Thread(target=_run_multi_passport, daemon=True).start()
-        return f"⏳ מתחיל עדכון פספורטים ל-{len(chosen)} בעלי בתים..."
-
     # === עדכון פספורט בית - כל לקוחות בבית ===
     if msg_s.startswith("פספורט בית ") or msg_s.startswith("עדכון פספורט בית "):
         prefix = "פספורט בית " if msg_s.startswith("פספורט בית ") else "עדכון פספורט בית "
@@ -3882,20 +2568,13 @@ def handle_command(message, from_number):
             if not accounts:
                 return f"❓ לא מצאתי בעל בית בשם *{name_q}*"
             if len(accounts) == 1:
-                # בית אחד - התחל ישירות
                 aname = accounts[0].get("Account_Name", "")
-                def _run_single_passport(acc=accounts[0]):
-                    result = bulk_passport_update_for_account(acc, from_number)
-                    _send_reply(result, from_number)
-                threading.Thread(target=_run_single_passport, daemon=True).start()
-                return f"⏳ מתחיל עדכון פספורטים - *{aname}*..."
-            # כמה בתוצאות - אפשר בחירת כמה
-            lines = [f"U0001f3e0 בחר בעלי בתים לעדכון פספורט:"]
-            for j, a in enumerate(accounts, 1):
-                lines.append(f"{j}. {a.get('Account_Name','')}")
-            lines.append("\nשלח מספרים מופרדים בפסיקות (1,3,5) או 'הכל' או 0 לביטול")
-            sessions[from_number] = {"pending": "pick_multi_accounts_passport", "accounts": accounts}
-            return "\n".join(lines)
+                sessions[from_number] = {"pending": "confirm_bulk_passport", "account": accounts[0]}
+                return (f"🔍 תעדכן פספורטים לכל לקוחות בית *{aname}*\n"
+                        f"התהליך עובר על כל לקוח שאין לו שם ויזה ומחפש פספורט בקבצים.\n"
+                        f"האם להתחיל?\n1. כן\n2. לא")
+            sessions[from_number] = {"pending": "choose_account_bulk_passport", "accounts": accounts, "name_q": name_q}
+            return _format_account_choice_menu(accounts, "עדכון פספורטים")
 
     # === סטטוס לקוח ===
     if msg_s.startswith("סטטוס "):
@@ -3906,39 +2585,20 @@ def handle_command(message, from_number):
                 return f"❓ לא מצאתי לקוח בשם *{name_q}*"
             if len(contacts) == 1:
                 sessions.pop(from_number, None)
-                status_text, aname, cid = build_customer_status(name_q, contact=contacts[0])
-                cname_s0 = contacts[0].get("Full_Name", name_q)
-                if aname:
-                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname, "cid": cid, "cname": cname_s0}
-                return status_text
+                return build_customer_status(name_q, contact=contacts[0])
             sessions[from_number] = {"pending": "choose_contact_status", "contacts": contacts, "name_q": name_q}
             return _format_contact_choice_menu(contacts, "סטטוס")
 
     # === דוח בית ===
-    # תמוך גם ב-"דוח [שם]" בלי בית
-    if msg_s.startswith("דוח ") and not msg_s.startswith("דוח בית ") and not msg_s.startswith("דוח יומי") and not msg_s.startswith("דוח יומי"):
-        name_q_short = msg_s[4:].strip()
-        if name_q_short and len(name_q_short) >= 2:
-            # הפנה לטיפול בדוח בית
-            return handle_command(f"דוח בית {name_q_short}", from_number)
-    if msg_s.startswith("סטטוס בית ") or msg_s.startswith("דוח בית "):
-        name_q = msg_s.split(" ", 2)[2].strip() if len(msg_s.split(" ", 2)) > 2 else ""
+    if msg_s.startswith("דוח בית "):
+        name_q = msg_s[len("דוח בית "):].strip()
         if name_q:
             accounts = _word_search_accounts(name_q)
             if not accounts:
                 return f"❓ לא מצאתי בעל בית בשם *{name_q}*"
             if len(accounts) == 1:
                 sessions.pop(from_number, None)
-                result = build_landlord_report(name_q, account=accounts[0])
-                report, ordered_contacts = result[0], result[1]
-                rest_contacts = result[2] if len(result) > 2 else []
-                contact_ids_map = result[3] if len(result) > 3 else {}
-                by_contact_map = result[4] if len(result) > 4 else {}
-                active_lines_map = result[5] if len(result) > 5 else {}
-                if ordered_contacts:
-                    sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts,
-                        "rest": rest_contacts, "contact_ids": contact_ids_map,
-                        "by_contact": by_contact_map, "active_lines": active_lines_map, "aname": name_q}
+                report = build_landlord_report(name_q, account=accounts[0])
                 parts = split_message(report)
                 if len(parts) == 1: return parts[0]
                 def _send_lr_rest():
@@ -4284,100 +2944,6 @@ def handle_command(message, from_number):
     
     if not intent:
         intent = parse_intent(message)
-    
-    # === Fallback: אם Gemini החזיר unknown אבל ההודעה מכילה מוצר מהקאש - כפה create_invoice ===
-    if intent.get("action") == "unknown":
-        # בדוק אם ההודעה מכילה מוצר מוכר מהקאש
-        all_prods = get_cached_products()
-        msg_lower_check = message.strip().lower()
-        # רשימת מילות עצירה שלא יכולות להיות מוצרים
-        stop_words = {"שילם", "שולם", "שלם", "תשלום", "מזומן", "העברה", "אשראי", "צ'ק",
-                      "הוסף", "לקוח", "חדש", "פתח", "צור", "קווים", "פעילים", "חשבונית",
-                      "כן", "לא", "ביטול", "תפריט"}
-        # בנה מפת מילה בתוך שם מוצר (stripped) -> רשימת מוצרים
-        word_to_products = {}  # word -> list of products containing it
-        for p in all_prods:
-            pname = p.get("Product_Name", "").strip()
-            if not pname or len(pname) < 3:
-                continue
-            pname_clean = re.sub(r'[^\u05d0-\u05ea\u05f0-\u05f4a-z0-9 ]', ' ', pname.lower())
-            for pw in pname_clean.split():
-                if len(pw) >= 3 and pw not in stop_words and not pw.isdigit():
-                    word_to_products.setdefault(pw, []).append(p)
-        # בדוק כל מילה בהודעה - אם היא מזהה מוצר יחיד
-        matched_product = None
-        msg_words_check = [re.sub(r'[^\u05d0-\u05ea\u05f0-\u05f4a-z0-9]', '', w)
-                           for w in msg_lower_check.split()
-                           if len(w) >= 3 and not w.isdigit()]
-        for mw in msg_words_check:
-            if mw in stop_words:
-                continue
-            candidates = word_to_products.get(mw, [])
-            if len(candidates) == 1:
-                # מילה ייחודית למוצר אחד
-                matched_product = candidates[0]
-                break
-            elif len(candidates) > 1:
-                # מילה מופיעה במספר מוצרים - שמור לבדיקה נוספת
-                matched_product = candidates[0]  # קח את הראשון, יושאל בהמשך
-                break
-        if matched_product:
-            pname = matched_product.get("Product_Name", "")
-            print(f"Product fallback: found '{pname}' in message, forcing create_invoice")
-            # הסר את שם המוצר מההודעה
-            remaining_words = message.strip()
-            for pw in pname.split():
-                remaining_words = re.sub(re.escape(pw), '', remaining_words, flags=re.IGNORECASE).strip()
-            remaining_words = remaining_words.strip()
-            # חלץ את כל המספרים מהמשפט (בכל מיקום)
-            # מספר >= 50 = מחיר, מספר < 50 = כמות
-            qty = 1
-            price = 0
-            all_numbers = re.findall(r'\b(\d+)\b', remaining_words)
-            for num_str in all_numbers:
-                num_val = int(num_str)
-                if num_val >= 50:
-                    price = num_val
-                elif 2 <= num_val <= 49:
-                    qty = num_val
-            # הסר את כל המספרים מהמחרוזת כדי לקבל שמות בלבד
-            remaining_words = re.sub(r'\b\d+\b', '', remaining_words).strip()
-            remaining_words = re.sub(r'\s+', ' ', remaining_words).strip()
-            # remaining_words = שם לקוח + בעל בית
-            # נסה לחפש לקוח בזוהו מתוך המילים הנותרות
-            words_left = remaining_words.split()
-            contact_guess = ""
-            account_guess = ""
-            if words_left:
-                # נסה כל צירוף מילים כלקוח ובדוק אם קיים
-                best_contact = None
-                best_account = None
-                # נסה צירופים של 1-3 מילים כלקוח
-                for size in range(min(3, len(words_left)), 0, -1):
-                    for start in range(len(words_left) - size + 1):
-                        candidate = " ".join(words_left[start:start+size])
-                        try:
-                            contacts_try = zoho_get("Contacts/search", {"word": candidate}) or []
-                            if contacts_try:
-                                best_contact = candidate
-                                # השאר = בעל בית
-                                remaining_for_account = [w for i, w in enumerate(words_left) if i < start or i >= start+size]
-                                best_account = " ".join(remaining_for_account)
-                                break
-                        except Exception:
-                            pass
-                    if best_contact:
-                        break
-                if best_contact:
-                    contact_guess = best_contact
-                    account_guess = best_account
-                else:
-                    # אם לא נמצא לקוח - שים הכל כבעל בית
-                    contact_guess = ""
-                    account_guess = remaining_words
-            intent = {"action": "create_invoice", "product": pname, "contact": contact_guess, "account": account_guess, "price": price, "quantity": qty}
-            print(f"Product fallback intent: {intent}")
-    
     action = intent.get("action")
     print(f"action={action}, intent={intent}")
 
@@ -4391,41 +2957,7 @@ def handle_command(message, from_number):
 
         products = find_product(product_name)
         if not products:
-            # נסה למצוא מוצר מהקאש לפי מילות בהודעה המקורית
-            all_prods_fb = get_cached_products()
-            msg_lower_fb = message.strip().lower()
-            stop_words_fb = {'שילם', 'שולם', 'שלם', 'תשלום', 'מזומן', 'העברה', 'אשראי', "צ'ק",
-                              'הוסף', 'לקוח', 'חדש', 'פתח', 'צור', 'קווים', 'פעילים', 'חשבונית',
-                              'כן', 'לא', 'ביטול', 'תפריט'}
-            for p_fb in all_prods_fb:
-                pn_fb = p_fb.get('Product_Name', '').strip()
-                if not pn_fb or len(pn_fb) < 3:
-                    continue
-                pwords_fb = pn_fb.lower().split()
-                # נקה תווים מיוחדים
-                pwords_fb_clean = [re.sub(r'[^\u05d0-\u05ea\u05f0-\u05f4a-z0-9]', '', pw) for pw in pwords_fb]
-                sig_pwords_fb = [pw for pw in pwords_fb_clean if len(pw) >= 4]
-                if sig_pwords_fb and all(pw in msg_lower_fb for pw in sig_pwords_fb):
-                    if not any(pw in stop_words_fb for pw in pwords_fb_clean):
-                        print(f'Product cache fallback in create_invoice: found {pn_fb}')
-                        products = [p_fb]
-                        product_name = pn_fb
-                        # עדכן שמות לקוח/בעל בית לפי מה שנשאר אחרי הסרת המוצר
-                        rem_fb = message.strip()
-                        for pw in pn_fb.split():
-                            rem_fb = re.sub(re.escape(pw), '', rem_fb, flags=re.IGNORECASE).strip()
-                        rem_fb = re.sub(r'\b\d+\b', '', rem_fb).strip()
-                        rem_fb = re.sub(r'\s+', ' ', rem_fb).strip()
-                        wl_fb = rem_fb.split()
-                        if wl_fb and not contact_name:
-                            contact_name = wl_fb[0]
-                            account_name = ' '.join(wl_fb[1:]) if len(wl_fb) > 1 else wl_fb[0]
-                            if len(wl_fb) == 1:
-                                contact_name = ''
-                                account_name = wl_fb[0]
-                        break
-            if not products:
-                return f"❌ לא מצאתי מוצר '{product_name}'"
+            return f"❌ לא מצאתי מוצר '{product_name}'"
 
         # אם יש יותר ממוצר אחד - נסה לצמצם
         if len(products) > 1:
@@ -4612,13 +3144,10 @@ def handle_command(message, from_number):
         lines = [f"• {i.get('Subject', '')} - ₪{i.get('Grand_Total', 0)}" for i in open_inv]
         return f"📋 {len(open_inv)} חשבוניות פתוחות:\n" + "\n".join(lines)
 
-    return ("❓ פקודה לא מוכרת.\n"
-            "לדוגמה:\n"
-            "• *050 לטייה של איציק* - חשבונית חדשה\n"
-            "• *טונגצאי בוי שער דוד שילם 120 מזומן* - תשלום\n"
-            "• *קווים פעילים אילן* - בדיקת קווים\n"
-            "\n"
-            "שלח *9* לתפריט הראשי")
+    return ("❓ לא הבנתי. לדוגמה:\n"
+            "• '050 לטייה של איציק' - חשבונית חדשה\n"
+            "• 'טונגצאי בוי שער דוד שילם 120 מזומן' - תשלום\n"
+            "• 'קווים פעילים אילן' - בדיקת קווים")
 
 def bulk_passport_update_for_account(account: dict, from_number: str) -> str:
     """
@@ -4650,27 +3179,31 @@ def bulk_passport_update_for_account(account: dict, from_number: str) -> str:
 
     if not all_contacts:
         return f"❌ לא נמצאו לקוחות בבית *{aname}*"
-    # עבד על כל הלקוחות (כולל מי שיש לו שם ויזה)
-    missing = all_contacts
+
+    # סנן: רק לקוחות שאין להם שם ויזה
+    missing = [c for c in all_contacts if not (c.get("Visa_Name1") or "").strip()]
+    already = len(all_contacts) - len(missing)
+
+    if not missing:
+        return (f"✅ כל {len(all_contacts)} לקוחות בבית *{aname}* כבר יש להם שם ויזה!")
+
     # שלח עדכון ראשון
     _send_reply(
-        f"\U0001f50d מתחיל עיבוד {len(missing)} לקוחות - *{aname}*",
+        f"🔍 מתחיל עיבוד {len(missing)} לקוחות - *{aname}*\n"
+        f"({already} כבר יש שם ויזה, מדלגים)",
         from_number
     )
+
     updated = []
     skipped = []
     failed = []
-    cancel_flags.pop(from_number, None)  # נקה דגל ביטול ישן
+
     for contact in missing:
-        # בדוק אם המשתמש ביקש ביטול
-        if cancel_flags.get(from_number):
-            cancel_flags.pop(from_number, None)
-            _send_reply(f"⛔ עיבוד פספורט בוטל - *{aname}*\nעודכנו: {len(updated)}, דולגו: {len(skipped)}", from_number)
-            return f"⛔ בוטל על ידי המשתמש"
         cname = contact.get("Full_Name", "")
         cid = contact["id"]
+
         # שלוף קבצים מצורפים
-        r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z, timeout=15)
+        r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z)
         if r.status_code != 200 or not r.json().get("data"):
             skipped.append(f"⏩ {cname} - אין קבצים")
             continue
@@ -4752,6 +3285,8 @@ def bulk_passport_update_for_account(account: dict, from_number: str) -> str:
     if failed:
         lines.append(f"\n❌ שגיאות ({len(failed)}):")
         lines.extend(failed)
+    if already:
+        lines.append(f"\nℹ️ דילגנו על {already} לקוחות - שדה שם הויזה כבר מלא")
     return "\n".join(lines)
 
 
@@ -4764,7 +3299,6 @@ def _crop_face_center(img_bytes: bytes):
     """
     import io
     import numpy as np
-    import gc
     from PIL import Image, ImageOps
 
     debug_lines = []
@@ -4778,68 +3312,30 @@ def _crop_face_center(img_bytes: bytes):
 
         arr = np.array(img_pil)
 
-        # הגבל גודל תמונה ל-1200px לחסכון בזיכרון
-        MAX_DIM = 1200
-        if iw > MAX_DIM or ih > MAX_DIM:
-            ratio = MAX_DIM / max(iw, ih)
-            img_pil = img_pil.resize((int(iw * ratio), int(ih * ratio)), Image.LANCZOS)
-            iw, ih = img_pil.size
-            arr = np.array(img_pil)
-            debug_lines.append(f"שוקלל ל: {iw}x{ih}")
-
         best_box = None
         best_conf = 0.0
 
-        # נסה MediaPipe Face Detection
+        # זיהוי פנים באמצעות OpenCV Haar Cascade (קל ויעיל)
         try:
-            import mediapipe as mp
-            mp_face = mp.solutions.face_detection
-            with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.3) as detector:
-                results = detector.process(arr)
-                if results.detections:
-                    for det in results.detections:
-                        conf = det.score[0] if det.score else 0.0
-                        bb = det.location_data.relative_bounding_box
-                        x1 = int(bb.xmin * iw)
-                        y1 = int(bb.ymin * ih)
-                        x2 = int((bb.xmin + bb.width) * iw)
-                        y2 = int((bb.ymin + bb.height) * ih)
-                        # ודא גבולות תקינים
-                        x1, y1 = max(0, x1), max(0, y1)
-                        x2, y2 = min(iw, x2), min(ih, y2)
-                        w, h = x2 - x1, y2 - y1
-                        debug_lines.append(f"MediaPipe: conf={conf:.2f} ({x1},{y1})-({x2},{y2}) {w}x{h}")
-                        if conf > best_conf:
-                            best_conf = conf
-                            best_box = (x1, y1, x2, y2)
-                    if best_box:
-                        debug_lines.append(f"MediaPipe מצא פנים! confidence={best_conf:.2f}")
-                else:
-                    debug_lines.append("MediaPipe לא מצא פנים")
-        except ImportError:
-            debug_lines.append("MediaPipe לא מותקן, מנסה OpenCV")
-        except Exception as mp_err:
-            debug_lines.append(f"MediaPipe שגיאה: {str(mp_err)[:80]}")
-        finally:
-            gc.collect()  # שחרר זיכרון MediaPipe
-
-        # fallback: נסה OpenCV אם MediaPipe לא מצא
-        if best_box is None:
-            try:
-                import cv2
-                debug_lines.append("מנסה OpenCV Haar Cascade כ-fallback")
-                gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-                cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-                face_cascade = cv2.CascadeClassifier(cascade_path)
-                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-                if len(faces) == 0:
-                    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=3, minSize=(20, 20))
-                debug_lines.append(f"Haar: {len(faces)} פנים")
-                if len(faces) > 0:
-                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-                    best_box = (x, y, x + w, y + h)
-            except Exception as cv_err:
-                debug_lines.append(f"OpenCV שגיאה: {str(cv_err)[:80]}")
+            import cv2
+            gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            face_cascade = cv2.CascadeClassifier(cascade_path)
+            # ניסיון ראשון - הגדרות סטנדרטיות
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            if len(faces) == 0:
+                # ניסיון שני - הגדרות מרוככות יותר
+                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=3, minSize=(20, 20))
+            if len(faces) == 0:
+                # ניסיון שלישי - תמונות קשות
+                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.03, minNeighbors=2, minSize=(15, 15))
+            debug_lines.append(f"Haar: {len(faces)} פנים")
+            if len(faces) > 0:
+                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                best_box = (x, y, x + w, y + h)
+                debug_lines.append(f"Haar מצא פנים: ({x},{y}) {w}x{h}")
+        except Exception as cv_err:
+            debug_lines.append(f"OpenCV שגיאה: {str(cv_err)[:80]}")
 
         if best_box is None:
             return _fallback_crop(img_pil, iw, ih, debug_lines, "no face detected")
@@ -4877,8 +3373,6 @@ def _crop_face_center(img_bytes: bytes):
         final.save(buf, format="JPEG", quality=90)
         face_bytes = buf.getvalue()
         debug_lines.append(f"חיתוך הצליח! ({len(face_bytes)//1000}KB)")
-        del arr, img_pil, buf
-        gc.collect()
         return face_bytes, "\n".join(debug_lines)
 
     except Exception as e:
@@ -5098,7 +3592,7 @@ def _scan_profiles_for_account(account: dict) -> tuple:
         page += 1
 
     if not all_contacts:
-        return f"❌ לא נמצאו לקוחות - *{aname}*", []
+        return f"❌ לא נמצאו לקוחות - *{aname}*", {}, []
 
     contacts_data = []
     for contact in all_contacts:
@@ -5248,106 +3742,7 @@ def _fix_profiles_from_next_attachment(to_fix: list, account: dict, from_number:
     return "\n".join(lines), new_used_att_ids
 
 
-import os as _os
-import json as _json
-import time as _time_mod
-import threading as _threading
-
-_RESUME_DIR = "/tmp/bot_logs"
-
-def _save_resume_state(aid: str, aname: str, from_number: str, completed_ids: set, total: int):
-    """שומר מצב ריצה לאחר כל לקוח מעובד."""
-    try:
-        _os.makedirs(_RESUME_DIR, exist_ok=True)
-        state_file = f"{_RESUME_DIR}/profile_resume_{aid}.json"
-        started_at = _time_mod.time()
-        if _os.path.exists(state_file):
-            try:
-                with open(state_file) as f:
-                    old = _json.load(f)
-                    started_at = old.get("started_at", started_at)
-            except:
-                pass
-        state = {
-            "aid": aid,
-            "aname": aname,
-            "from_number": from_number,
-            "completed_ids": list(completed_ids),
-            "total": total,
-            "started_at": started_at,
-            "status": "running"
-        }
-        with open(state_file, "w") as f:
-            _json.dump(state, f)
-    except Exception:
-        pass
-
-def _clear_resume_state(aid: str):
-    """מוחק קובץ מצב בסיום מוצלח."""
-    try:
-        state_file = f"{_RESUME_DIR}/profile_resume_{aid}.json"
-        if _os.path.exists(state_file):
-            _os.remove(state_file)
-    except:
-        pass
-
-def _auto_resume_on_startup():
-    """בודק אם יש ריצות לא גמורות ומחדש אותן - פעם אחת בלבד."""
-    import time
-    time.sleep(10)
-    try:
-        if not _os.path.exists(_RESUME_DIR):
-            return
-        for fname in _os.listdir(_RESUME_DIR):
-            if not fname.startswith("profile_resume_") or not fname.endswith(".json"):
-                continue
-            state_file = f"{_RESUME_DIR}/{fname}"
-            try:
-                with open(state_file) as f:
-                    state = _json.load(f)
-            except:
-                _os.remove(state_file)
-                continue
-            if state.get("status") != "running":
-                continue
-            age = _time_mod.time() - state.get("started_at", 0)
-            if age > 7200:
-                _os.remove(state_file)
-                continue
-            state["status"] = "resuming"
-            with open(state_file, "w") as f:
-                _json.dump(state, f)
-            aid = state["aid"]
-            aname = state["aname"]
-            from_number = state["from_number"]
-            completed_ids = set(state.get("completed_ids", []))
-            total = state.get("total", 0)
-            done = len(completed_ids)
-            _send_reply(
-                f"\U0001f504 *חידוש אוטומטי - פרופיל כללי*\n"
-                f"\U0001f3e0 בית: {aname}\n"
-                f"\u23f8 נעצר בלקוח {done}/{total}\n"
-                f"\u23f3 ממשיך מלקוח {done+1}...",
-                from_number
-            )
-            try:
-                token, domain = get_access_token()
-                headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
-                r = requests.get(f"{domain}/crm/v2/Accounts/{aid}", headers=headers_z)
-                if r.status_code == 200:
-                    accounts = r.json().get("data", [])
-                    if accounts:
-                        bulk_profile_update_for_account(accounts[0], from_number, skip_ids=completed_ids)
-                        return
-            except Exception:
-                pass
-            _os.remove(state_file)
-    except Exception:
-        pass
-
-_threading.Thread(target=_auto_resume_on_startup, daemon=True).start()
-
-def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: set = None) -> str:
+def bulk_profile_update_for_account(account: dict, from_number: str) -> str:
     """
     עובר על כל לקוחות של בעל בית ומחפש תמונת פרופיל לפי סדר עדיפויות:
     1. קובץ בשם 'פרופיל' (כולל וריאציות)
@@ -5415,8 +3810,6 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
     aname = account.get("Account_Name", "")
     token, domain = get_access_token()
     headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
-    if skip_ids is None:
-        skip_ids = set()
 
     all_contacts = []
     page = 1
@@ -5432,31 +3825,32 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
         page += 1
 
     if not all_contacts:
-        return f"❌ לא נמצאו לקוחות - *{aname}*"
+        return f"❌ לא נמצאו לקוחות - *{aname}*", {}
 
     # סרוק כל לקוח ובחר את הקובץ הטוב ביותר
     to_process = []   # [(contact, attachment, reason)]
     no_image = []     # [cname]
-    cancel_flags.pop(from_number, None)  # נקה דגל ביטול ישן
-    for contact in all_contacts:
-        # בדוק אם המשתמש ביקש ביטול
-        if cancel_flags.get(from_number):
-            cancel_flags.pop(from_number, None)
-            _send_reply(f"⛔ עיבוד פרופיל בוטל - *{aname}*", from_number)
-            return f"⛔ בוטל על ידי המשתמש"
+    has_photo_already = []  # [cname] - לקוחות שכבר יש תמונת פרופיל
+
+    for scan_idx, contact in enumerate(all_contacts):
         cid = contact["id"]
         cname = contact.get("Full_Name", "")
-        # בדוק אם כבר יש פרופיל קיים ב-Zoho - אם כן, דלג
-        if cid not in skip_ids:
-            photo_check = requests.get(f"{domain}/crm/v2/Contacts/{cid}/photo", headers=headers_z)
-            if photo_check.status_code == 200:
-                no_image.append(f"{cname} (כבר יש פרופיל)")
+
+        # רענן טוקן כל 20 לקוחות כדי למנוע תפיגת טוקן
+        if scan_idx % 20 == 0:
+            token, domain = get_access_token()
+            headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+
+        # בדוק אם כבר יש תמונת פרופיל - אם כן, דלג
+        try:
+            photo_r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/photo", headers=headers_z, timeout=15)
+            if photo_r.status_code == 200 and len(photo_r.content) > 1000:
+                has_photo_already.append(cname)
                 time.sleep(0.1)
                 continue
-        else:
-            no_image.append(f"{cname} (כבר עובד)")
-            time.sleep(0.1)
-            continue
+        except Exception:
+            pass  # אם הבדיקה נכשלה, ממשיכים לעיבוד
+
         r = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments", headers=headers_z)
         if r.status_code == 200 and r.json().get("data"):
             atts = r.json()["data"]
@@ -5473,65 +3867,97 @@ def bulk_profile_update_for_account(account: dict, from_number: str, skip_ids: s
     total = len(all_contacts)
     will_update = len(to_process)
     will_skip = len(no_image)
-    already_has = sum(1 for x in no_image if "כבר יש פרופיל" in x or "כבר עובד" in x)
+    already_have = len(has_photo_already)
     summary_lines = [
         f"🔍 *סיכום לפני עדכון פרופילים - {aname}*",
         "─" * 28,
         f"👥 סה\"כ לקוחות: {total}",
-        f"🟢 יעודכנו: {will_update}",
-        f"⏩ ידולגו (כבר יש פרופיל): {already_has}",
-        f"⏩ ידולגו (אין תמונה): {will_skip - already_has}",
+        f"🟢 יעודכנו (אין תמונה): {will_update}",
+        f"⏩ דולגו (כבר יש פרופיל): {already_have}",
+        f"⏩ דולגו (אין תמונה): {will_skip}",
         f"\n⏳ מתחיל עיבוד {will_update} לקוחות...",
     ]
     _send_reply("\n".join(summary_lines), from_number)
 
     if not to_process:
-        return f"❌ לא נמצאו תמונות בבית *{aname}*"
+        return f"❌ לא נמצאו תמונות בבית *{aname}*", {}
 
     updated = []
     failed = []
 
     used_att_ids = {}  # {contact_id: att_id} - מעקב אחר קבצים ששימשו
 
+    # שמור מצב ראשוני לפני התחלת עיבוד
+    _save_resume_state({
+        "from_number": from_number,
+        "account_id": aid,
+        "account_name": aname,
+        "started_at": time.time(),
+        "total": len(to_process),
+        "completed_ids": [],
+        "status": "running"
+    })
+
     for i, (contact, att, reason) in enumerate(to_process, 1):
         cname = contact.get("Full_Name", "")
         cid = contact["id"]
 
-        r2 = requests.get(f"{domain}/crm/v2/Contacts/{cid}/Attachments/{att['id']}", headers=headers_z)
-        if r2.status_code != 200:
-            failed.append(cname)
-            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה בהורדת קובץ ({r2.status_code})", from_number)
-            continue
-
-        face_bytes, face_dbg = _crop_face_center(r2.content)
-        if not face_bytes:
-            failed.append(cname)
-            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - חיתוך נכשל: {face_dbg[:60]}", from_number)
-            continue
+        # רענן טוקן כל 20 לקוחות כדי למנוע תפיגת טוקן
+        if i % 20 == 1:
+            token, domain = get_access_token()
+            headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
 
         try:
+            r2 = requests.get(
+                f"{domain}/crm/v2/Contacts/{cid}/Attachments/{att['id']}",
+                headers=headers_z, timeout=30
+            )
+            if r2.status_code != 200:
+                failed.append(cname)
+                _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה בהורדת קובץ ({r2.status_code})", from_number)
+                time.sleep(0.3)
+                continue
+
+            face_bytes, face_dbg = _crop_face_center(r2.content)
+            if not face_bytes:
+                failed.append(cname)
+                _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - חיתוך נכשל: {face_dbg[:60]}", from_number)
+                time.sleep(0.3)
+                continue
+
             photo_resp = requests.post(
                 f"{domain}/crm/v2/Contacts/{cid}/photo",
                 headers=headers_z,
-                files={"file": ("profile.jpg", face_bytes, "image/jpeg")}
+                files={"file": ("profile.jpg", face_bytes, "image/jpeg")},
+                timeout=30
             )
             if photo_resp.status_code in [200, 201, 202]:
                 updated.append(cname)
-                used_att_ids[cid] = [att['id']]  # שמור את ה-attachment ששימש
-                skip_ids.add(cid)
-                _save_resume_state(aid, aname, from_number, skip_ids, len(to_process))
+                used_att_ids[cid] = [att['id']]
                 _send_reply(f"✅ [{i}/{len(to_process)}] {cname} - פרופיל עודכן ({reason})", from_number)
             else:
                 failed.append(cname)
                 _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה ({photo_resp.status_code})", from_number)
         except Exception as e:
             failed.append(cname)
-            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה: {str(e)[:50]}", from_number)
+            _send_reply(f"❌ [{i}/{len(to_process)}] {cname} - שגיאה: {str(e)[:60]}", from_number)
+
+        # עדכן מצב אחרי כל לקוח - כדי שיוכל להמשיך אחרי רסטרט
+        _save_resume_state({
+            "from_number": from_number,
+            "account_id": aid,
+            "account_name": aname,
+            "started_at": time.time(),
+            "total": len(to_process),
+            "completed_ids": [c["id"] for c, _, _ in to_process[:i]],
+            "last_index": i,
+            "status": "running"
+        })
 
         time.sleep(0.5)
 
-    # סיכום סופי
-    _clear_resume_state(aid)
+    # סיכום סופי - מחק מצב אחרי הצלחה
+    _clear_resume_state()
     lines = [f"🏠 *סיכום סופי - פרופילים {aname}*", "─" * 28]
     lines.append(f"✅ עודכנו: {len(updated)}")
     if no_image:
@@ -5548,7 +3974,15 @@ def _send_reply(reply: str, from_number: str, original_msg: str = ""):
     full_reply = quote + reply
     parts = split_message(full_reply)
     for i, part in enumerate(parts):
-        twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
+        try:
+            twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
+        except Exception as twilio_err:
+            print(f"[_send_reply] Twilio error (part {i+1}/{len(parts)}): {twilio_err}")
+            time.sleep(2)  # המתן קצת לפני ניסיון הבא
+            try:
+                twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
+            except Exception as retry_err:
+                print(f"[_send_reply] Retry failed: {retry_err}")
         if i < len(parts) - 1:
             time.sleep(0.5)
 
@@ -5681,10 +4115,7 @@ def webhook():
 
         # === טיפול בתמונת פספורט נכנסת ===
         # פורמט: תמונה + כיתוב "פספורט [שם לקוח]"
-        if incoming_msg.strip().startswith("פרופיל "):
-            if num_media == 0:
-                _send_reply("❌ חסרה תמונה!\nשלח תמונה יחד עם הכיתוב *פרופיל [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7]*", from_number, incoming_msg)
-                return str(MessagingResponse())
+        if num_media > 0 and incoming_msg.strip().startswith("פרופיל "):
             name_q = incoming_msg.strip()[len("פרופיל "):].strip()
             media_url = request.values.get("MediaUrl0", "")
             media_type = request.values.get("MediaContentType0", "image/jpeg")
@@ -5692,10 +4123,7 @@ def webhook():
             _send_reply(reply, from_number, incoming_msg)
             return str(MessagingResponse())
 
-        if incoming_msg.strip().startswith("פספורט "):
-            if num_media == 0:
-                _send_reply("❌ חסרה תמונה!\nשלח תמונה יחד עם הכיתוב *פספורט [\u05e9\u05dd \u05dc\u05e7\u05d5\u05d7]*", from_number, incoming_msg)
-                return str(MessagingResponse())
+        if num_media > 0 and incoming_msg.strip().startswith("פספורט "):
             name_q = incoming_msg.strip()[len("פספורט "):].strip()
             media_url = request.values.get("MediaUrl0", "")
             media_type = request.values.get("MediaContentType0", "image/jpeg")
@@ -5705,9 +4133,13 @@ def webhook():
         
         reply = handle_command(incoming_msg, from_number)
         
+        # הוסף ציטוט של ההודעה המקורית בתחילת התשובה
+        quote = f"📩 \"{incoming_msg}\"\n─────────────\n"
+        full_reply = quote + reply
+        
         # פצל הודעה ל-1400 תווים מקסימום (תמיכה בכמה חלקים)
-        parts = split_message(reply)
-        print(f"=== Reply: {len(reply)} chars, {len(parts)} part(s) ===")
+        parts = split_message(full_reply)
+        print(f"=== Reply: {len(full_reply)} chars, {len(parts)} part(s) ===")
         for i, part in enumerate(parts):
             twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=from_number, body=part)
             if i < len(parts) - 1:
@@ -5774,8 +4206,7 @@ def create_invoice_and_pay_api():
 
         # 5. שלח הודעת WhatsApp לאישור
         acc_name = acc_obj.get("name", "") if isinstance(acc_obj, dict) else ""
-        msg = (f"📱 *לקוחות מרוחקים - ביקורית*\n"
-               f"✅ חשבונית נוצרה ושולמה!\n"
+        msg = (f"✅ חשבונית נוצרה ושולמה!\n"
                f"👤 {contact['Full_Name']}\n"
                f"🏠 {acc_name}\n"
                f"📦 {product.get('Product_Name')}\n"
@@ -5817,52 +4248,73 @@ def preload_cache():
     except Exception as e:
         print(f"Preload cache error: {e}")
 
-# ─── Temp image store for WhatsApp media sending ─────────────────────────────
-import uuid as _uuid
-_temp_images = {}  # token -> (bytes, content_type, expires_at)
-
-@app.route("/tmp_img/<token>")
-def serve_temp_image(token):
-    from flask import send_file as _send_file
-    import io as _io
-    entry = _temp_images.get(token)
-    if not entry:
-        return "Not found", 404
-    img_bytes, content_type, expires_at = entry
-    if time.time() > expires_at:
-        _temp_images.pop(token, None)
-        return "Expired", 410
-    return _send_file(_io.BytesIO(img_bytes), mimetype=content_type)
-
-def _store_temp_image(img_bytes: bytes, content_type: str = "image/jpeg", ttl: int = 300) -> str:
-    """שמור תמונה זמנית ומחזיר URL ציבורי"""
-    token = _uuid.uuid4().hex
-    _temp_images[token] = (img_bytes, content_type, time.time() + ttl)
-    railway_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-    if railway_url:
-        base = f"https://{railway_url}"
-    else:
-        base = "https://web-production-12a94.up.railway.app"
-    return f"{base}/tmp_img/{token}"
-
-def _send_whatsapp_image(img_url: str, caption: str, to_number: str):
-    """שלח תמונה בוואטסאפ עם כיתוב"""
-    try:
-        twilio_client.messages.create(
-            from_=TWILIO_WHATSAPP_FROM,
-            to=to_number,
-            body=caption,
-            media_url=[img_url]
-        )
-    except Exception as e:
-        print(f"[SEND IMAGE] Error: {e}")
-        _send_reply(f"⚠️ שגיאה בשליחת תמונה: {str(e)[:60]}", to_number)
-
 # הפעל טעינת קאש ברקע
 threading.Thread(target=preload_cache, daemon=True).start()
-
 # הפעל תזמון דוח יומי ברקע (23:30 כל יום)
 threading.Thread(target=_daily_report_scheduler, daemon=True).start()
+
+# ─── חידוש אוטומטי לפרופיל כללי אחרי רסטרט ──────────────────────────────────
+def _auto_resume_on_startup():
+    """
+    בדיקה בהפעלה: אם יש קובץ מצב של ריצה לא גמורה,
+    מתחיל מחדש את פרופיל כללי מהלקוח שנעצר באמצע.
+    """
+    try:
+        time.sleep(8)  # חכה שהשרת יעלה לגמרי לפני בדיקה
+        state = _load_resume_state()
+        if not state or state.get("status") != "running":
+            print("[AutoResume] אין ריצה לא גמורה לחידוש")
+            return
+
+        from_number = state.get("from_number", "")
+        account_id  = state.get("account_id", "")
+        account_name = state.get("account_name", "")
+        completed_ids = set(state.get("completed_ids", []))
+        last_index = state.get("last_index", 0)
+        total = state.get("total", 0)
+        started_at = state.get("started_at", 0)
+
+        if not from_number or not account_id:
+            print("[AutoResume] מצב חסר פרטים - מדלג")
+            _clear_resume_state()
+            return
+
+        # בדוק שהריצה לא ישנה מדי (24 שעות)
+        if time.time() - started_at > 86400:
+            print("[AutoResume] קובץ מצב ישן מדי (>24ש) - מדלג")
+            _clear_resume_state()
+            return
+
+        print(f"[AutoResume] מזוהה ריצה לא גמורה: {account_name} ({last_index}/{total})")
+
+        # שלח הודעה למשתמש
+        _send_reply(
+            f"🔄 *חידוש אוטומטי - פרופיל כללי*\n"
+            f"🏠 בית: {account_name}\n"
+            f"⏸️ נעצר בלקוח {last_index}/{total}\n"
+            f"⏳ ממשיך מלקוח {last_index + 1}...",
+            from_number
+        )
+
+        # טען את החשבון מזוה
+        token, domain = get_access_token()
+        headers_z = {"Authorization": f"Zoho-oauthtoken {token}"}
+        r_acc = requests.get(f"{domain}/crm/v5/Accounts/{account_id}",
+                             headers=headers_z, timeout=20)
+        if r_acc.status_code != 200:
+            _send_reply(f"❌ לא ניתן לטעון חשבון {account_name} ({r_acc.status_code})", from_number)
+            _clear_resume_state()
+            return
+        account_obj = r_acc.json().get("data", [{}])[0]
+
+        # הרץ מחדש - bulk_profile_update_for_account ידלג אוטומטית לקוחות שכבר יש להם פרופיל
+        result, _ = bulk_profile_update_for_account(account_obj, from_number)
+        _send_reply(result, from_number)
+
+    except Exception as e:
+        print(f"[AutoResume] שגיאה: {e}")
+
+threading.Thread(target=_auto_resume_on_startup, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
