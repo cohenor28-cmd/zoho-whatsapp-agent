@@ -2215,11 +2215,16 @@ def handle_command(message, from_number):
                         _multi_results.append(_res)
                         break
             if _multi_results:
-                def _send_updated_report_multi():
+                _aname_multi = aname_session
+                _fn_multi = from_number
+                def _send_updated_report_multi(_aname=_aname_multi, _fn=_fn_multi):
                     import time as _time
                     _time.sleep(1.5)
                     try:
-                        _result = build_landlord_report(aname_session)
+                        _cur = sessions.get(_fn, {})
+                        if _cur.get("aname", "") != _aname and _cur.get("pending") == "choose_landlord_contact":
+                            return
+                        _result = build_landlord_report(_aname)
                         _rep = _result[0]
                         _ordered = _result[1] if len(_result) > 1 else []
                         _rest_c = _result[2] if len(_result) > 2 else []
@@ -2227,15 +2232,15 @@ def handle_command(message, from_number):
                         _byc = _result[4] if len(_result) > 4 else {}
                         _alines = _result[5] if len(_result) > 5 else {}
                         if _ordered:
-                            sessions[from_number] = {"pending": "choose_landlord_contact",
+                            sessions[_fn] = {"pending": "choose_landlord_contact",
                                 "contacts": _ordered, "rest": _rest_c,
                                 "contact_ids": _cids, "by_contact": _byc,
-                                "active_lines": _alines, "aname": aname_session}
+                                "active_lines": _alines, "aname": _aname}
                         else:
-                            sessions.pop(from_number, None)
+                            sessions.pop(_fn, None)
                         twilio_client.messages.create(
                             from_=TWILIO_WHATSAPP_FROM,
-                            to=f"whatsapp:{from_number.replace('whatsapp:', '')}",
+                            to=f"whatsapp:{_fn.replace('whatsapp:', '')}",
                             body=_rep)
                     except Exception as _e:
                         print(f"Error sending updated report: {_e}")
@@ -2247,16 +2252,12 @@ def handle_command(message, from_number):
             # בדוק אם השאר מכיל שם לקוח מהרשימה
             all_c_inline = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
             _matched_contact = None
-            _pay_method_inline = "מזומן"
+            # חפש שיטת תשלום ב-choice המלא (לא רק ב-_pay_rest)
+            _pay_method_inline = _detect_payment_method(choice)
             _name_part = _pay_rest
-            # חפש שיטת תשלום בסוף הטקסט
-            for _m_kw in ["העבר", "ציאפ", "אשראי", "המחאה", "גיהוץ", "gmt", "019"]:
-                if _m_kw in _pay_rest.lower():
-                    _pay_method_inline = _detect_payment_method(_pay_rest)
-                    # הסר מילת התשלום מהשם
-                    for _rm in ["העברה ציאפ", "ציאפ", "העברה", "אשראי", "המחאה", "גיהוץ", "gmt", "019"]:
-                        _name_part = _re.sub(_rm, '', _name_part, flags=_re.IGNORECASE).strip()
-                    break
+            # הסר מילות תשלום מהשם
+            for _rm in ["העברה ציאפ", "ציאפ", "העברה", "אשראי", "המחאה", "גיהוץ", "gmt", "019"]:
+                _name_part = _re.sub(_rm, '', _name_part, flags=_re.IGNORECASE).strip()
             for _cn, _cid in all_c_inline:
                 if _name_part.strip() and any(w in _cn for w in _name_part.split()):
                     _matched_contact = (_cn, _cid)
@@ -2267,11 +2268,19 @@ def handle_command(message, from_number):
                 _contact_obj = {"id": _cid_pay, "Full_Name": _cname_pay, "Account_Name": {"name": aname_session}}
                 _pay_result = _process_payment_for_contact(_contact_obj, _pay_amount, _pay_method_inline, from_number)
                 # אחרי תשלום - שלח אישור ואחרכך דוח מעודכן
-                def _send_updated_report():
+                # שמור את שם הבית הנוכחי לשימוש ב-thread
+                _aname_for_report = aname_session
+                _fn_for_report = from_number
+                def _send_updated_report(_aname=_aname_for_report, _fn=_fn_for_report):
                     import time as _time
                     _time.sleep(1.5)
                     try:
-                        _result = build_landlord_report(aname_session)
+                        # בדוק שהסשן הנוכחי עדיין שייך לאותו בית
+                        _cur_session = sessions.get(_fn, {})
+                        if _cur_session.get("aname", "") != _aname and _cur_session.get("pending") == "choose_landlord_contact":
+                            print(f"[REPORT] Session changed, skipping report for {_aname}")
+                            return
+                        _result = build_landlord_report(_aname)
                         _rep = _result[0]
                         _ordered = _result[1] if len(_result) > 1 else []
                         _rest_c = _result[2] if len(_result) > 2 else []
@@ -2279,15 +2288,15 @@ def handle_command(message, from_number):
                         _byc = _result[4] if len(_result) > 4 else {}
                         _alines = _result[5] if len(_result) > 5 else {}
                         if _ordered:
-                            sessions[from_number] = {"pending": "choose_landlord_contact",
+                            sessions[_fn] = {"pending": "choose_landlord_contact",
                                 "contacts": _ordered, "rest": _rest_c,
                                 "contact_ids": _cids, "by_contact": _byc,
-                                "active_lines": _alines, "aname": aname_session}
+                                "active_lines": _alines, "aname": _aname}
                         else:
-                            sessions.pop(from_number, None)
+                            sessions.pop(_fn, None)
                         twilio_client.messages.create(
                             from_=TWILIO_WHATSAPP_FROM,
-                            to=f"whatsapp:{from_number.replace('whatsapp:', '')}",
+                            to=f"whatsapp:{_fn.replace('whatsapp:', '')}",
                             body=_rep)
                     except Exception as _e:
                         print(f"Error sending updated report: {_e}")
