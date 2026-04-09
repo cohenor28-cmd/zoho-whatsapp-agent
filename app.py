@@ -2158,7 +2158,7 @@ def handle_command(message, from_number):
                 if ordered_contacts:
                     sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts,
                         "rest": rest_contacts, "contact_ids": contact_ids_map,
-                        "by_contact": by_contact_map, "active_lines": active_lines_map, "aname": name_q}
+                        "by_contact": by_contact_map, "active_lines": active_lines_map, "aname": accounts[idx].get("Account_Name", name_q), "account_id": accounts[idx].get("id", "")}
                 return report
         return f"❓ כתוב מספר בין 1 ל-{len(accounts)}"
 
@@ -2170,6 +2170,7 @@ def handle_command(message, from_number):
         by_contact_map = session.get("by_contact", {})
         active_lines_map = session.get("active_lines", {})
         aname_session = session.get("aname", "")
+        account_id_session = session.get("account_id", "")
         choice = message.strip()
         # זיהוי תשלום מבפנים: "תשלום 100 שם" או "100 שם"
         import re as _re
@@ -2223,7 +2224,8 @@ def handle_command(message, from_number):
                     body=_combined)
                 # עדכן דוח בית - סינכרוני
                 try:
-                    _result = build_landlord_report(aname_session)
+                    _account_obj_m = {"id": account_id_session, "Account_Name": aname_session} if account_id_session else None
+                    _result = build_landlord_report(aname_session, account=_account_obj_m)
                     _rep = _result[0]
                     _ordered = _result[1] if len(_result) > 1 else []
                     _rest_c = _result[2] if len(_result) > 2 else []
@@ -2234,7 +2236,8 @@ def handle_command(message, from_number):
                         sessions[from_number] = {"pending": "choose_landlord_contact",
                             "contacts": _ordered, "rest": _rest_c,
                             "contact_ids": _cids, "by_contact": _byc,
-                            "active_lines": _alines, "aname": aname_session}
+                            "active_lines": _alines, "aname": aname_session,
+                            "account_id": account_id_session}
                     else:
                         sessions.pop(from_number, None)
                     return _rep
@@ -2268,7 +2271,8 @@ def handle_command(message, from_number):
                     body=_pay_result)
                 # עדכן דוח בית - סינכרוני, ללא thread
                 try:
-                    _result = build_landlord_report(aname_session)
+                    _account_obj = {"id": account_id_session, "Account_Name": aname_session} if account_id_session else None
+                    _result = build_landlord_report(aname_session, account=_account_obj)
                     _rep = _result[0]
                     _ordered = _result[1] if len(_result) > 1 else []
                     _rest_c = _result[2] if len(_result) > 2 else []
@@ -2279,7 +2283,8 @@ def handle_command(message, from_number):
                         sessions[from_number] = {"pending": "choose_landlord_contact",
                             "contacts": _ordered, "rest": _rest_c,
                             "contact_ids": _cids, "by_contact": _byc,
-                            "active_lines": _alines, "aname": aname_session}
+                            "active_lines": _alines, "aname": aname_session,
+                            "account_id": account_id_session}
                     else:
                         sessions.pop(from_number, None)
                     return _rep
@@ -3942,6 +3947,7 @@ def handle_command(message, from_number):
                 return f"❓ לא מצאתי בעל בית בשם *{name_q}*"
             if len(accounts) == 1:
                 sessions.pop(from_number, None)
+                _full_aname_single = accounts[0].get("Account_Name", name_q)
                 result = build_landlord_report(name_q, account=accounts[0])
                 report, ordered_contacts = result[0], result[1]
                 rest_contacts = result[2] if len(result) > 2 else []
@@ -3951,7 +3957,8 @@ def handle_command(message, from_number):
                 if ordered_contacts:
                     sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts,
                         "rest": rest_contacts, "contact_ids": contact_ids_map,
-                        "by_contact": by_contact_map, "active_lines": active_lines_map, "aname": name_q}
+                        "by_contact": by_contact_map, "active_lines": active_lines_map,
+                        "aname": _full_aname_single, "account_id": accounts[0].get("id", "")}
                 parts = split_message(report)
                 if len(parts) == 1: return parts[0]
                 def _send_lr_rest():
