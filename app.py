@@ -1833,6 +1833,9 @@ def handle_command(message, from_number):
     if pending and msg_nav == "9" and pending not in _selection_states:
         sessions.pop(from_number, None)
         return MAIN_MENU_TEXT.strip()
+    # === 9 = תפריט ראשי גם כשאין פעולה פעילה (לא דרך MENU_SHORTCUTS) ===
+    if not pending and msg_nav == "9":
+        return MAIN_MENU_TEXT.strip()
 
     # === בחירת לקוח לעדכון פספורט ===
     if pending == "choose_contact_passport":
@@ -2193,9 +2196,36 @@ def handle_command(message, from_number):
             if _matched_contact:
                 _cname_pay, _cid_pay = _matched_contact
                 _pay_amount = float(_pay_amount_str.replace(',', '.'))
-                sessions.pop(from_number, None)
                 _contact_obj = {"id": _cid_pay, "Full_Name": _cname_pay, "Account_Name": {"name": aname_session}}
-                return _process_payment_for_contact(_contact_obj, _pay_amount, _pay_method_inline, from_number)
+                _pay_result = _process_payment_for_contact(_contact_obj, _pay_amount, _pay_method_inline, from_number)
+                # אחרי תשלום - שלח אישור ואחרכך דוח מעודכן
+                def _send_updated_report():
+                    import time as _time
+                    _time.sleep(1.5)
+                    try:
+                        _result = build_landlord_report(aname_session)
+                        _rep = _result[0]
+                        _ordered = _result[1] if len(_result) > 1 else []
+                        _rest_c = _result[2] if len(_result) > 2 else []
+                        _cids = _result[3] if len(_result) > 3 else {}
+                        _byc = _result[4] if len(_result) > 4 else {}
+                        _alines = _result[5] if len(_result) > 5 else {}
+                        if _ordered:
+                            sessions[from_number] = {"pending": "choose_landlord_contact",
+                                "contacts": _ordered, "rest": _rest_c,
+                                "contact_ids": _cids, "by_contact": _byc,
+                                "active_lines": _alines, "aname": aname_session}
+                        else:
+                            sessions.pop(from_number, None)
+                        twilio_client.messages.create(
+                            from_=TWILIO_WHATSAPP_FROM,
+                            to=f"whatsapp:{from_number.replace('whatsapp:', '')}",
+                            body=_rep)
+                    except Exception as _e:
+                        print(f"Error sending updated report: {_e}")
+                import threading as _threading
+                _threading.Thread(target=_send_updated_report, daemon=True).start()
+                return _pay_result
         # ספרה 10 = הצג את כל הרשימה
         if choice == "10" and rest_contacts:
             all_contacts = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
