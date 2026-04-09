@@ -2215,38 +2215,32 @@ def handle_command(message, from_number):
                         _multi_results.append(_res)
                         break
             if _multi_results:
-                _aname_multi = aname_session
-                _fn_multi = from_number
-                def _send_updated_report_multi(_aname=_aname_multi, _fn=_fn_multi):
-                    import time as _time
-                    _time.sleep(1.5)
-                    try:
-                        _cur = sessions.get(_fn, {})
-                        if _cur.get("aname", "") != _aname and _cur.get("pending") == "choose_landlord_contact":
-                            return
-                        _result = build_landlord_report(_aname)
-                        _rep = _result[0]
-                        _ordered = _result[1] if len(_result) > 1 else []
-                        _rest_c = _result[2] if len(_result) > 2 else []
-                        _cids = _result[3] if len(_result) > 3 else {}
-                        _byc = _result[4] if len(_result) > 4 else {}
-                        _alines = _result[5] if len(_result) > 5 else {}
-                        if _ordered:
-                            sessions[_fn] = {"pending": "choose_landlord_contact",
-                                "contacts": _ordered, "rest": _rest_c,
-                                "contact_ids": _cids, "by_contact": _byc,
-                                "active_lines": _alines, "aname": _aname}
-                        else:
-                            sessions.pop(_fn, None)
-                        twilio_client.messages.create(
-                            from_=TWILIO_WHATSAPP_FROM,
-                            to=f"whatsapp:{_fn.replace('whatsapp:', '')}",
-                            body=_rep)
-                    except Exception as _e:
-                        print(f"Error sending updated report: {_e}")
-                import threading as _threading
-                _threading.Thread(target=_send_updated_report_multi, daemon=True).start()
-                return "\n".join(_multi_results)
+                # שלח אישורי תשלום
+                _combined = "\n\n".join(_multi_results)
+                twilio_client.messages.create(
+                    from_=TWILIO_WHATSAPP_FROM,
+                    to=f"whatsapp:{from_number.replace('whatsapp:', '')}",
+                    body=_combined)
+                # עדכן דוח בית - סינכרוני
+                try:
+                    _result = build_landlord_report(aname_session)
+                    _rep = _result[0]
+                    _ordered = _result[1] if len(_result) > 1 else []
+                    _rest_c = _result[2] if len(_result) > 2 else []
+                    _cids = _result[3] if len(_result) > 3 else {}
+                    _byc = _result[4] if len(_result) > 4 else {}
+                    _alines = _result[5] if len(_result) > 5 else {}
+                    if _ordered:
+                        sessions[from_number] = {"pending": "choose_landlord_contact",
+                            "contacts": _ordered, "rest": _rest_c,
+                            "contact_ids": _cids, "by_contact": _byc,
+                            "active_lines": _alines, "aname": aname_session}
+                    else:
+                        sessions.pop(from_number, None)
+                    return _rep
+                except Exception as _e:
+                    print(f"Error building updated report: {_e}")
+                    return ""
 
         if _pay_amount_str is not None:
             # בדוק אם השאר מכיל שם לקוח מהרשימה
@@ -2267,42 +2261,31 @@ def handle_command(message, from_number):
                 _pay_amount = float(_pay_amount_str.replace(',', '.'))
                 _contact_obj = {"id": _cid_pay, "Full_Name": _cname_pay, "Account_Name": {"name": aname_session}}
                 _pay_result = _process_payment_for_contact(_contact_obj, _pay_amount, _pay_method_inline, from_number)
-                # אחרי תשלום - שלח אישור ואחרכך דוח מעודכן
-                # שמור את שם הבית הנוכחי לשימוש ב-thread
-                _aname_for_report = aname_session
-                _fn_for_report = from_number
-                def _send_updated_report(_aname=_aname_for_report, _fn=_fn_for_report):
-                    import time as _time
-                    _time.sleep(1.5)
-                    try:
-                        # בדוק שהסשן הנוכחי עדיין שייך לאותו בית
-                        _cur_session = sessions.get(_fn, {})
-                        if _cur_session.get("aname", "") != _aname and _cur_session.get("pending") == "choose_landlord_contact":
-                            print(f"[REPORT] Session changed, skipping report for {_aname}")
-                            return
-                        _result = build_landlord_report(_aname)
-                        _rep = _result[0]
-                        _ordered = _result[1] if len(_result) > 1 else []
-                        _rest_c = _result[2] if len(_result) > 2 else []
-                        _cids = _result[3] if len(_result) > 3 else {}
-                        _byc = _result[4] if len(_result) > 4 else {}
-                        _alines = _result[5] if len(_result) > 5 else {}
-                        if _ordered:
-                            sessions[_fn] = {"pending": "choose_landlord_contact",
-                                "contacts": _ordered, "rest": _rest_c,
-                                "contact_ids": _cids, "by_contact": _byc,
-                                "active_lines": _alines, "aname": _aname}
-                        else:
-                            sessions.pop(_fn, None)
-                        twilio_client.messages.create(
-                            from_=TWILIO_WHATSAPP_FROM,
-                            to=f"whatsapp:{_fn.replace('whatsapp:', '')}",
-                            body=_rep)
-                    except Exception as _e:
-                        print(f"Error sending updated report: {_e}")
-                import threading as _threading
-                _threading.Thread(target=_send_updated_report, daemon=True).start()
-                return _pay_result
+                # שלח אישור תשלום מיד
+                twilio_client.messages.create(
+                    from_=TWILIO_WHATSAPP_FROM,
+                    to=f"whatsapp:{from_number.replace('whatsapp:', '')}",
+                    body=_pay_result)
+                # עדכן דוח בית - סינכרוני, ללא thread
+                try:
+                    _result = build_landlord_report(aname_session)
+                    _rep = _result[0]
+                    _ordered = _result[1] if len(_result) > 1 else []
+                    _rest_c = _result[2] if len(_result) > 2 else []
+                    _cids = _result[3] if len(_result) > 3 else {}
+                    _byc = _result[4] if len(_result) > 4 else {}
+                    _alines = _result[5] if len(_result) > 5 else {}
+                    if _ordered:
+                        sessions[from_number] = {"pending": "choose_landlord_contact",
+                            "contacts": _ordered, "rest": _rest_c,
+                            "contact_ids": _cids, "by_contact": _byc,
+                            "active_lines": _alines, "aname": aname_session}
+                    else:
+                        sessions.pop(from_number, None)
+                    return _rep
+                except Exception as _e:
+                    print(f"Error building updated report: {_e}")
+                    return ""
         # ספרה 10 = הצג את כל הרשימה
         if choice == "10" and rest_contacts:
             all_contacts = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
