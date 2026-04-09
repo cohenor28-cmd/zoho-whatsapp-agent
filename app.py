@@ -2333,7 +2333,7 @@ def handle_command(message, from_number):
                     body=_combined)
                 # עדכן דוח בית - סינכרוני
                 try:
-                    import time as _time_m; _time_m.sleep(1.2)  # המתן לZoho לעדכן
+                    import time as _time_m; _time_m.sleep(0.5)  # המתן לZoho לעדכן
                     _account_obj_m = {"id": account_id_session, "Account_Name": aname_session} if account_id_session else None
                     _result = build_landlord_report(aname_session, account=_account_obj_m)
                     _rep = _result[0]
@@ -2511,7 +2511,7 @@ def handle_command(message, from_number):
                 body=_pay_res_nav)
             # בנה דוח לקוח מעודכן
             try:
-                import time as _time_nav; _time_nav.sleep(1.2)
+                import time as _time_nav; _time_nav.sleep(0.5)
                 _status_nav, _aname_nav, _cid_nav2 = build_customer_status(cname_nav, contact=contact_obj_nav)
                 if _aname_nav:
                     sessions[from_number] = {"pending": "customer_status_nav", "aname": _aname_nav,
