@@ -4119,8 +4119,12 @@ def handle_command(message, from_number):
             sessions.pop(from_number, None)
             return "❌ המחיקה בוטלה"
         else:
-            # אם זו פקודה חדשה (לא כן/לא) - נקה סשן ועבד אותה
-            sessions.pop(from_number, None)
+            # שחזר סשן קודם (אם היה) לפני עיבוד הפקודה
+            _prev = session.get("prev_session", {})
+            if _prev:
+                sessions[from_number] = _prev
+            else:
+                sessions.pop(from_number, None)
             return handle_command(message, from_number)
     # === זיהוי פקודה חדשה כשיש session פתוח ===
     if pending and _looks_like_new_command(message):
@@ -4398,9 +4402,11 @@ def handle_command(message, from_number):
             )
         lines.append("\n\nכתוב *כן* למחיקה או *לא* לביטול")
         
+        _prev_session = sessions.get(from_number, {})
         sessions[from_number] = {
             "pending": "confirm_delete_invoice",
-            "invoices_to_delete": invoices_list
+            "invoices_to_delete": invoices_list,
+            "prev_session": _prev_session
         }
         return "\n".join(lines)
 
