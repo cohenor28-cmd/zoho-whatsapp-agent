@@ -2293,7 +2293,9 @@ def handle_command(message, from_number):
         elif _m2:
             _pay_rest, _pay_amount_str = _m2.group(1).strip(), _m2.group(2)
         elif _m3:
-            _pay_rest, _pay_amount_str = _m3.group(1).strip(), _m3.group(2)
+            # אל תטפל כתשלום אם המספר מתחיל ב-0 (קוד מוצר כמו 050, 019)
+            if not _m3.group(2).startswith('0'):
+                _pay_rest, _pay_amount_str = _m3.group(1).strip(), _m3.group(2)
         # בדוק תשלום מרובה - מספר זוגות שם+סכום בהודעה אחת
         # פצל לפי שורות ונקודה-פסיק לטיפול נכון בהודעות מרובות שורות
         _lines_choice = _re.split(r'[\n;,]+', choice)
