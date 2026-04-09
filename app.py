@@ -2178,6 +2178,7 @@ def handle_command(message, from_number):
         if _pay_amount_str is not None:
             # בדוק אם השאר מכיל שם לקוח מהרשימה
             all_c_inline = contacts + [(c, contact_ids_map.get(c, "")) for c in rest_contacts]
+            print(f"[PAY_DEBUG] amount={_pay_amount_str} rest={_pay_rest} all_c={[cn for cn,_ in all_c_inline[:5]]}")
             _matched_contact = None
             _pay_method_inline = "מזומן"
             _name_part = _pay_rest
