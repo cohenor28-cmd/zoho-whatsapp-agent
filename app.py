@@ -2171,6 +2171,29 @@ def handle_command(message, from_number):
                 return report
         return f"❓ כתוב מספר בין 1 ל-{len(accounts)}"
 
+    # === בחירת חשבונית לתשלום (MUST be before choose_landlord_contact) ===
+    # === בחירת חשבונית לתשלום (MUST be before choose_landlord_contact) ===
+    if pending == "payment_invoice_choice":
+        options = session.get("options", [])
+        context = session.get("context", {})
+        contact = context.get("contact", {})
+        chosen = pick_best_match(options, message)
+        if not chosen:
+            lines = "\n".join([f"{i+1}. {inv.get('Subject','')}" for i, inv in enumerate(options)])
+            return f"לא הצלחתי לזהות. בחר מספר:\n{lines}"
+        sessions.pop(from_number, None)
+        pay_amount = context.get("amount") or chosen.get("Grand_Total", 0)
+        pay_method = context.get("method") or "מזומן"
+        success = mark_invoice_paid(chosen["id"], pay_amount, pay_method)
+        if success:
+            acc_name = contact.get("Account_Name", {}).get("name", "") if isinstance(contact.get("Account_Name"), dict) else ""
+            log_action("תשלום", f"תשלום: {contact.get('Full_Name','')} @ {acc_name} ₪{pay_amount} {pay_method}")
+            return (f"✅ תשלום עודכן!\n"
+                    f"👤 {contact.get('Full_Name','')}\n"
+                    f"🏠 {acc_name}\n"
+                    f"💰 ₪{pay_amount} | {pay_method}\n"
+                    f"📄 {chosen.get('Subject', '')}")
+        return "❌ שגיאה בעדכון התשלום"
     # === בחירת לקוח מסטטוס בית (לחיצה על ספרה) ===
     if pending == "choose_landlord_contact":
         contacts = session.get("contacts", [])  # list of (cname, cid) - top 8
@@ -2233,6 +2256,7 @@ def handle_command(message, from_number):
                     body=_combined)
                 # עדכן דוח בית - סינכרוני
                 try:
+                    import time as _time_m; _time_m.sleep(2)  # המתן לZoho לעדכן
                     _account_obj_m = {"id": account_id_session, "Account_Name": aname_session} if account_id_session else None
                     _result = build_landlord_report(aname_session, account=_account_obj_m)
                     _rep = _result[0]
@@ -2280,6 +2304,7 @@ def handle_command(message, from_number):
                     body=_pay_result)
                 # עדכן דוח בית - סינכרוני, ללא thread
                 try:
+                    import time as _time_s; _time_s.sleep(2)  # המתן לZoho לעדכן
                     _account_obj = {"id": account_id_session, "Account_Name": aname_session} if account_id_session else None
                     _result = build_landlord_report(aname_session, account=_account_obj)
                     _rep = _result[0]
@@ -2364,13 +2389,16 @@ def handle_command(message, from_number):
         aname = session.get("aname", "")
         cid_nav = session.get("cid", "")
         cname_nav = session.get("cname", "")
-        if message.strip() == "7":
+        msg_nav = message.strip()
+        if msg_nav == "7":
             # תשלום דרך סטטוס לקוח - עבור ל-payment flow
             sessions.pop(from_number, None)
             return handle_command(f"תשלום {cname_nav}", from_number)
-        if message.strip() == "8" and aname:
+        if msg_nav == "8" and aname:
             sessions.pop(from_number, None)
-            result = build_landlord_report(aname)
+            account_id_nav = session.get("account_id", "")
+            _acct_obj_nav = {"id": account_id_nav, "Account_Name": aname} if account_id_nav else None
+            result = build_landlord_report(aname, account=_acct_obj_nav)
             report, ordered_contacts = result[0], result[1]
             rest_contacts = result[2] if len(result) > 2 else []
             contact_ids_map = result[3] if len(result) > 3 else {}
@@ -2379,8 +2407,19 @@ def handle_command(message, from_number):
             if ordered_contacts:
                 sessions[from_number] = {"pending": "choose_landlord_contact", "contacts": ordered_contacts,
                     "rest": rest_contacts, "contact_ids": contact_ids_map,
-                    "by_contact": by_contact_map, "active_lines": active_lines_map, "aname": aname}
+                    "by_contact": by_contact_map, "active_lines": active_lines_map, "aname": aname,
+                    "account_id": account_id_nav}
             return report
+        # תשלום ישיר מדף לקוח: "100" או "100 מזומן" או "100 019"
+        import re as _re_nav
+        _pay_nav = _re_nav.match(r'^(\d+(?:[.,]\d+)?)(?:\s+(.+))?$', msg_nav)
+        if _pay_nav:
+            _amt_nav = float(_pay_nav.group(1).replace(',', ''))
+            _rest_nav = _pay_nav.group(2) or ""
+            _method_nav = _detect_payment_method(_rest_nav) if _rest_nav else "מזומן"
+            sessions.pop(from_number, None)
+            contact_obj_nav = {"id": cid_nav, "Full_Name": cname_nav, "Account_Name": {"name": aname}}
+            return _process_payment_for_contact(contact_obj_nav, _amt_nav, _method_nav, from_number)
         sessions.pop(from_number, None)
         return None  # ימשיך לטיפול רגיל
 
