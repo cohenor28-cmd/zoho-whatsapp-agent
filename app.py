@@ -2162,8 +2162,8 @@ def handle_command(message, from_number):
                 sessions.pop(from_number, None)
                 status_text, aname, cid = build_customer_status(name_q, contact=contacts[idx])
                 cname_s = contacts[idx].get("Full_Name", name_q)
-                if aname:
-                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname, "cid": cid, "cname": cname_s}
+                # תמיד צור סשן customer_status_nav גם אם aname ריק
+                sessions[from_number] = {"pending": "customer_status_nav", "aname": aname or "", "cid": cid, "cname": cname_s}
                 return status_text
         return f"❓ כתוב מספר בין 1 ל-{len(contacts)}"
 
@@ -2442,8 +2442,8 @@ def handle_command(message, from_number):
                 # בנה contact dict מינימלי ל-build_customer_status
                 contact_obj = {"id": cid, "Full_Name": cname}
                 status_text, aname, cid_s = build_customer_status(cname, contact=contact_obj)
-                if aname:
-                    sessions[from_number] = {"pending": "customer_status_nav", "aname": aname, "cid": cid_s, "cname": cname}
+                _eff_aname = aname or aname_session  # fallback לשם בית מהסשן הנוכחי
+                sessions[from_number] = {"pending": "customer_status_nav", "aname": _eff_aname, "cid": cid_s or cid, "cname": cname, "account_id": account_id_session}
                 return status_text
         # זיהוי פקודת חשבונית חדשה מתוך דוח בית
         # רק אם ההודעה מכילה מילת מוצר ספציפית - לא כל הודעה עם 2 מילים!
