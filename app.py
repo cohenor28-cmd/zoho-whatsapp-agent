@@ -2334,6 +2334,24 @@ def handle_command(message, from_number):
                 if aname:
                     sessions[from_number] = {"pending": "customer_status_nav", "aname": aname, "cid": cid_s, "cname": cname}
                 return status_text
+        # זיהוי פקודת חשבונית חדשה מתוך דוח בית
+        # אם ההודעה נראית כמו פקודת חשבונית (מכילה שם מוצר) - עבד אותה
+        _invoice_keywords = ["050", "סוויט", "תכלת", "בלוטוס", "מקל סלפי", "אוזניות", "רמקול",
+                             "סוללה", "מטען", "שעון", "פלאפון", "מכשיר", "טאבלט", "מזגן",
+                             "ראוטר", "כבל", "מגן", "מעמד", "מקלדת", "עכבר", "תיק", "פנס",
+                             "מאוורר", "מקרן", "מקרר", "נרתיק", "גיטרה", "חשבונית"]
+        _choice_lower = choice.lower()
+        _is_invoice_cmd = any(kw in _choice_lower for kw in _invoice_keywords)
+        # גם אם ה-Gemini יזהה כ-create_invoice
+        if _is_invoice_cmd or (len(choice.split()) >= 2 and not choice.isdigit()):
+            # שמור את הסשן הנוכחי כדי לחזור אחרי החשבונית
+            _saved_session = sessions.get(from_number, {}).copy()
+            result = handle_command(choice, from_number)
+            # אם הפקודה לא הצליחה לזהות - שחזר סשן
+            if result and ("❓" in result or "לא הבנתי" in result):
+                sessions[from_number] = _saved_session
+                return f"❓ כתוב מספר בין 1 ל-{len(contacts)} או 10 לכל הרשימה"
+            return result
         return f"❓ כתוב מספר בין 1 ל-{len(contacts)} או 10 לכל הרשימה"
 
     # === ניווט אחרי סטטוס לקוח: 7 לתשלום, 8 לסטטוס בית ===
