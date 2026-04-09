@@ -2197,10 +2197,33 @@ def handle_command(message, from_number):
         contact = context.get("contact", {})
         aname_pic = context.get("aname_session", "")
         account_id_pic = context.get("account_id_session", "")
+        # ביטול - החזר דוח בית
+        if message.strip() in ["0", "ביטול", "cancel"]:
+            sessions.pop(from_number, None)
+            if aname_pic:
+                try:
+                    _acct_pic0 = {"id": account_id_pic, "Account_Name": aname_pic} if account_id_pic else None
+                    _result_pic0 = build_landlord_report(aname_pic, account=_acct_pic0)
+                    _rep_pic0 = _result_pic0[0]
+                    _ord_pic0 = _result_pic0[1] if len(_result_pic0) > 1 else []
+                    _rst_pic0 = _result_pic0[2] if len(_result_pic0) > 2 else []
+                    _cids_pic0 = _result_pic0[3] if len(_result_pic0) > 3 else {}
+                    _byc_pic0 = _result_pic0[4] if len(_result_pic0) > 4 else {}
+                    _aln_pic0 = _result_pic0[5] if len(_result_pic0) > 5 else {}
+                    if _ord_pic0:
+                        sessions[from_number] = {"pending": "choose_landlord_contact",
+                            "contacts": _ord_pic0, "rest": _rst_pic0,
+                            "contact_ids": _cids_pic0, "by_contact": _byc_pic0,
+                            "active_lines": _aln_pic0, "aname": aname_pic,
+                            "account_id": account_id_pic}
+                    return _rep_pic0
+                except Exception as _e0:
+                    print(f"Error rebuilding report on cancel: {_e0}")
+            return "❌ בוטל"
         chosen = pick_best_match(options, message)
         if not chosen:
             lines = "\n".join([f"{i+1}. {inv.get('Subject','')}" for i, inv in enumerate(options)])
-            return f"לא הצלחתי לזהות. בחר מספר:\n{lines}"
+            return f"לא הצלחתי לזהות. בחר מספר:\n{lines}\n0 לביטול"
         sessions.pop(from_number, None)
         pay_amount = context.get("amount") or chosen.get("Grand_Total", 0)
         pay_method = context.get("method") or "מזומן"
