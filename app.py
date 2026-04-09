@@ -497,13 +497,22 @@ def mark_invoice_paid(invoice_id, amount, method):
     # Map method label to Zoho picklist actual_value
     # סוגי תשלום רלוונטיים: מזומן, gmt, 019, ציאפ
     method_map = {
-        "מזומן": "Option 1",
+        "מזומן": "מזומן",
         "gmt": "Gmt",
+        "ארנק": "Gmt",
         "019": "גיהוץ 019",
         "גיהוץ": "גיהוץ 019",
+        "גיהוז": "גיהוץ 019",
         "ציאפ": "העברה - ציאפ בנקוק",
+        "זיאפ": "העברה - ציאפ בנקוק",
         "העברה ציאפ": "העברה - ציאפ בנקוק",
         "העברה": "העברה - ציאפ בנקוק",
+        "העברה בנקאית": "העברה בנקאית",
+        "צ'ק": "המחאה (צ'ק)",
+        "המחאה": "המחאה (צ'ק)",
+        "אשראי": "כרטיס אשראי",
+        "מקס": "מקס - אשראי צליה",
+        "דני": "העברה - דני בנקוק",
     }
     payment_kind_value = method_map.get(method_label, method_map.get(method_label.split()[0] if method_label else "מזומן", "Option 1"))
     now_str = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
