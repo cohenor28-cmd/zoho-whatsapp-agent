@@ -2456,7 +2456,11 @@ def handle_command(message, from_number):
         if _is_invoice_cmd:
             # שמור את הסשן הנוכחי כדי לחזור אחרי החשבונית
             _saved_session = sessions.get(from_number, {}).copy()
-            result = handle_command(choice, from_number)
+            # הזרק שם בית לפקודה אם לא מצוין (כי אנחנו כבר בדוח הבית)
+            _inv_choice = choice
+            if aname_session and aname_session.lower() not in choice.lower():
+                _inv_choice = choice + " " + aname_session
+            result = handle_command(_inv_choice, from_number)
             # אם הפקודה לא הצליחה לזהות - שחזר סשן
             if result and ("❓" in result or "לא הבנתי" in result):
                 sessions[from_number] = _saved_session
