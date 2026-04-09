@@ -1832,10 +1832,27 @@ def update_passport_for_contact(contact: dict) -> str:
     return f"❌ לא הצלחתי לחלץ שם מהמסמכים של {contact_name}"
 
 
+def _set_session(from_number, data):
+    """Set session with timestamp"""
+    import time as _t_sess
+    data["_ts"] = _t_sess.time()
+    sessions[from_number] = data
+
 def handle_command(message, from_number):
     print(f"handle_command: '{message}' from {from_number}")
+    import time as _time_exp
     session = sessions.get(from_number, {})
     pending = session.get("pending")
+    # === פקיעת סשן אחרי 2 דקות של חוסר פעילות ===
+    if pending:
+        _last_ts = session.get("_ts", 0)
+        if _last_ts and (_time_exp.time() - _last_ts) > 120:  # 2 דקות
+            sessions.pop(from_number, None)
+            session = {}
+            pending = None
+    # עדכן timestamp בסשן הנוכחי
+    if pending and sessions.get(from_number):
+        sessions[from_number]["_ts"] = _time_exp.time()
     msg_nav = message.strip()
 
     # === 0 = ביטול מכל מצב ===
@@ -2316,7 +2333,7 @@ def handle_command(message, from_number):
                     body=_combined)
                 # עדכן דוח בית - סינכרוני
                 try:
-                    import time as _time_m; _time_m.sleep(2)  # המתן לZoho לעדכן
+                    import time as _time_m; _time_m.sleep(1.5)  # המתן לZoho לעדכן
                     _account_obj_m = {"id": account_id_session, "Account_Name": aname_session} if account_id_session else None
                     _result = build_landlord_report(aname_session, account=_account_obj_m)
                     _rep = _result[0]
@@ -2494,7 +2511,7 @@ def handle_command(message, from_number):
                 body=_pay_res_nav)
             # בנה דוח לקוח מעודכן
             try:
-                import time as _time_nav; _time_nav.sleep(2)
+                import time as _time_nav; _time_nav.sleep(1.5)
                 _status_nav, _aname_nav, _cid_nav2 = build_customer_status(cname_nav, contact=contact_obj_nav)
                 if _aname_nav:
                     sessions[from_number] = {"pending": "customer_status_nav", "aname": _aname_nav,
