@@ -5859,15 +5859,22 @@ def _do_passport_upload_and_update(contact: dict, media_url: str, media_type: st
         }],
         "generationConfig": {"temperature": 0}
     }
+    if not GEMINI_API_KEY:
+        return f"📎 הקובץ הועלה בשם {file_name} אך לא הצלחתי לחלץ שם (GEMINI_API_KEY חסר)"
+
     try:
         gr = requests.post(gemini_url, json=payload, timeout=30)
+        print(f"Gemini passport response: status={gr.status_code} body={gr.text[:300]}")
         if gr.status_code == 200:
             import re as _re
             extracted = gr.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            print(f"Gemini extracted raw: '{extracted}'")
             extracted_clean = _re.sub(r'[^A-Za-z\s]', '', extracted).strip().upper()
+            print(f"Gemini extracted clean: '{extracted_clean}'")
             _refusal_words = {"SORRY", "CANNOT", "UNABLE", "DOCUMENT", "IMAGE", "PASSPORT", "REQUEST", "EXTRACT", "PROVIDED", "THEREFORE", "FULFILL", "PHOTOGRAPH", "PERSON", "LOCATED", "NONE"}
             word_count = len(extracted_clean.split())
             has_refusal = any(w in extracted_clean.split() for w in _refusal_words)
+            print(f"Gemini word_count={word_count} has_refusal={has_refusal}")
             if extracted_clean and 1 <= word_count <= 4 and len(extracted_clean) <= 50 and not has_refusal:
                 upd = requests.put(f"{domain}/crm/v2/Contacts",
                                    headers={**headers_z, "Content-Type": "application/json"},
@@ -5878,8 +5885,17 @@ def _do_passport_upload_and_update(contact: dict, media_url: str, media_type: st
                             f"🪪 {extracted_clean}\n"
                             f"📎 הקובץ נשמר בשם: {file_name}")
                 return f"📎 הקובץ הועלה אך שגיאה בעדכון שם ויזה"
+            else:
+                return (f"📎 הקובץ הועלה בשם {file_name}\n"
+                        f"⚠️ לא זוהה שם ויזה בתמונה\n"
+                        f"(Gemini ענה: '{extracted[:80]}')"
+                        f"\nניתן לעדכן ידנית בZoho")
+        else:
+            return (f"📎 הקובץ הועלה בשם {file_name}\n"
+                    f"⚠️ שגיאה בGemini (status {gr.status_code}):\n{gr.text[:200]}")
     except Exception as e:
         print(f"Gemini vision error in upload: {e}")
+        return f"📎 הקובץ הועלה בשם {file_name} אך שגיאה בחילוץ שם: {str(e)[:100]}"
 
     return f"📎 הקובץ הועלה בשם {file_name} אך לא הצלחתי לחלץ שם"
 
