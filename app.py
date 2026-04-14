@@ -5862,11 +5862,25 @@ def _do_passport_upload_and_update(contact: dict, media_url: str, media_type: st
     if not GEMINI_API_KEY:
         return f"📎 הקובץ הועלה בשם {file_name} אך לא הצלחתי לחלץ שם (GEMINI_API_KEY חסר)"
 
+    import time as _time
+    import re as _re
+    gr = None
+    for _attempt in range(3):
+        try:
+            gr = requests.post(gemini_url, json=payload, timeout=30)
+            print(f"Gemini passport attempt {_attempt+1}: status={gr.status_code} body={gr.text[:300]}")
+            if gr.status_code in (503, 429):
+                print(f"Gemini overloaded ({gr.status_code}), retrying in 3s...")
+                _time.sleep(3)
+                continue
+            break
+        except Exception as _e:
+            print(f"Gemini request error attempt {_attempt+1}: {_e}")
+            _time.sleep(2)
+    if gr is None:
+        return f"📎 הקובץ הועלה בשם {file_name} אך Gemini לא ענה (timeout)"
     try:
-        gr = requests.post(gemini_url, json=payload, timeout=30)
-        print(f"Gemini passport response: status={gr.status_code} body={gr.text[:300]}")
         if gr.status_code == 200:
-            import re as _re
             extracted = gr.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
             print(f"Gemini extracted raw: '{extracted}'")
             extracted_clean = _re.sub(r'[^A-Za-z\s\-]', '', extracted).strip().upper()
