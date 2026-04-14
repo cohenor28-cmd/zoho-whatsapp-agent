@@ -5869,27 +5869,34 @@ def _do_passport_upload_and_update(contact: dict, media_url: str, media_type: st
             import re as _re
             extracted = gr.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
             print(f"Gemini extracted raw: '{extracted}'")
-            extracted_clean = _re.sub(r'[^A-Za-z\s]', '', extracted).strip().upper()
+            extracted_clean = _re.sub(r'[^A-Za-z\s\-]', '', extracted).strip().upper()
             print(f"Gemini extracted clean: '{extracted_clean}'")
-            _refusal_words = {"SORRY", "CANNOT", "UNABLE", "DOCUMENT", "IMAGE", "PASSPORT", "REQUEST", "EXTRACT", "PROVIDED", "THEREFORE", "FULFILL", "PHOTOGRAPH", "PERSON", "LOCATED", "NONE"}
+            _refusal_words = {"SORRY", "CANNOT", "UNABLE", "DOCUMENT", "IMAGE", "PASSPORT",
+                              "REQUEST", "EXTRACT", "PROVIDED", "THEREFORE", "FULFILL",
+                              "PHOTOGRAPH", "PERSON", "LOCATED", "NONE", "IDENTIFY",
+                              "VISIBLE", "CLEAR", "CONTAIN", "SHOWS", "APPEARS", "DETECT"}
             word_count = len(extracted_clean.split())
             has_refusal = any(w in extracted_clean.split() for w in _refusal_words)
             print(f"Gemini word_count={word_count} has_refusal={has_refusal}")
-            if extracted_clean and 1 <= word_count <= 4 and len(extracted_clean) <= 50 and not has_refusal:
+            # עד 6 מילות שם (שמות אסיאתיים ארוכים), עד 80 תווים
+            if extracted_clean and 1 <= word_count <= 6 and len(extracted_clean) <= 80 and not has_refusal:
                 upd = requests.put(f"{domain}/crm/v2/Contacts",
                                    headers={**headers_z, "Content-Type": "application/json"},
                                    json={"data": [{"id": contact_id, "Visa_Name1": extracted_clean}]})
+                print(f"Zoho update response: {upd.status_code} {upd.text[:200]}")
                 if upd.status_code == 200 and upd.json().get("data", [{}])[0].get("code") == "SUCCESS":
                     return (f"✅ פספורט הועלה ושם ויזה עודכן!\n"
                             f"👤 {contact_name}\n"
                             f"🪪 {extracted_clean}\n"
                             f"📎 הקובץ נשמר בשם: {file_name}")
-                return f"📎 הקובץ הועלה אך שגיאה בעדכון שם ויזה"
+                return (f"📎 הקובץ הועלה, שם חולץ: {extracted_clean}\n"
+                        f"⚠️ שגיאה בעדכון Zoho (status {upd.status_code})")
             else:
                 return (f"📎 הקובץ הועלה בשם {file_name}\n"
                         f"⚠️ לא זוהה שם ויזה בתמונה\n"
-                        f"(Gemini ענה: '{extracted[:80]}')"
-                        f"\nניתן לעדכן ידנית בZoho")
+                        f"Gemini ענה: '{extracted[:100]}'\n"
+                        f"(word_count={word_count}, has_refusal={has_refusal})\n"
+                        f"ניתן לעדכן ידנית בZoho")
         else:
             return (f"📎 הקובץ הועלה בשם {file_name}\n"
                     f"⚠️ שגיאה בGemini (status {gr.status_code}):\n{gr.text[:200]}")
